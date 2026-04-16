@@ -1,0 +1,23 @@
+syntax = "proto3";
+import "google/protobuf/empty.proto";
+package update_state;
+option go_package = "./userpb";
+
+message User {
+  string id = 1;
+  string name = 2;
+}
+
+message ServerStateUpdate {
+  map<string, string> config_update = 1;
+}
+
+// UpdateService handles server state updates and broadcasts them to connected clients.
+service UpdateService {
+  // rpc to broadcast the gamestate update to clients, return null
+  rpc BroadcastUpdate(ServerStateUpdate) returns (google.protobuf.Empty);
+
+  // rpc to subscribe to game state updates via stream
+  rpc SubscribeStateUpdates(google.protobuf.Empty) returns (stream ServerStateUpdate);
+
+}
