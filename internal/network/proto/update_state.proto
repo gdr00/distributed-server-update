@@ -2,21 +2,30 @@ syntax = "proto3";
 import "google/protobuf/empty.proto";
 option go_package = "./userpb";
 
-message User {
-  string id   = 1;
-  string name = 2;
+message HLC {
+  int64  wall_time = 1;
+  uint32 logical   = 2;
+  string node_id   = 3;
+}
+
+message SettingEntry {
+  string key     = 1;
+  string value   = 2;
+  HLC    clock   = 3;
+  bool   deleted = 4; // tombstone
 }
 
 message ServerStateUpdate {
-  map<string, string> config_update = 1;
+  repeated SettingEntry entries = 1;
 }
+
+message SyncRequest  { repeated SettingEntry local_state  = 1; }
+message SyncResponse { repeated SettingEntry newer_entries = 1; }
 
 // UpdateService handles server state updates and broadcasts them to connected clients.
 service UpdateService {
-  // rpc to broadcast the gamestate update to clients, return null
-  rpc BroadcastUpdate(ServerStateUpdate) returns (google.protobuf.Empty);
-
-  // rpc to subscribe to game state updates via stream
+  // Subscribe to rpc server for reciving updates
   rpc SubscribeStateUpdates(google.protobuf.Empty) returns (stream ServerStateUpdate);
-
+  // Sync server settings
+  rpc Sync(SyncRequest) returns (SyncResponse);
 }

@@ -20,8 +20,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	UpdateService_BroadcastUpdate_FullMethodName       = "/update_state.UpdateService/BroadcastUpdate"
-	UpdateService_SubscribeStateUpdates_FullMethodName = "/update_state.UpdateService/SubscribeStateUpdates"
+	UpdateService_SubscribeStateUpdates_FullMethodName = "/UpdateService/SubscribeStateUpdates"
+	UpdateService_Sync_FullMethodName                  = "/UpdateService/Sync"
 )
 
 // UpdateServiceClient is the client API for UpdateService service.
@@ -30,10 +30,10 @@ const (
 //
 // UpdateService handles server state updates and broadcasts them to connected clients.
 type UpdateServiceClient interface {
-	// rpc to broadcast the gamestate update to clients, return null
-	BroadcastUpdate(ctx context.Context, in *ServerStateUpdate, opts ...grpc.CallOption) (*emptypb.Empty, error)
-	// rpc to subscribe to game state updates via stream
+	// Subscribe to rpc server for reciving updates
 	SubscribeStateUpdates(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ServerStateUpdate], error)
+	// Sync server settings
+	Sync(ctx context.Context, in *SyncRequest, opts ...grpc.CallOption) (*SyncResponse, error)
 }
 
 type updateServiceClient struct {
@@ -42,16 +42,6 @@ type updateServiceClient struct {
 
 func NewUpdateServiceClient(cc grpc.ClientConnInterface) UpdateServiceClient {
 	return &updateServiceClient{cc}
-}
-
-func (c *updateServiceClient) BroadcastUpdate(ctx context.Context, in *ServerStateUpdate, opts ...grpc.CallOption) (*emptypb.Empty, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(emptypb.Empty)
-	err := c.cc.Invoke(ctx, UpdateService_BroadcastUpdate_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 func (c *updateServiceClient) SubscribeStateUpdates(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ServerStateUpdate], error) {
@@ -73,16 +63,26 @@ func (c *updateServiceClient) SubscribeStateUpdates(ctx context.Context, in *emp
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type UpdateService_SubscribeStateUpdatesClient = grpc.ServerStreamingClient[ServerStateUpdate]
 
+func (c *updateServiceClient) Sync(ctx context.Context, in *SyncRequest, opts ...grpc.CallOption) (*SyncResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SyncResponse)
+	err := c.cc.Invoke(ctx, UpdateService_Sync_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // UpdateServiceServer is the server API for UpdateService service.
 // All implementations must embed UnimplementedUpdateServiceServer
 // for forward compatibility.
 //
 // UpdateService handles server state updates and broadcasts them to connected clients.
 type UpdateServiceServer interface {
-	// rpc to broadcast the gamestate update to clients, return null
-	BroadcastUpdate(context.Context, *ServerStateUpdate) (*emptypb.Empty, error)
-	// rpc to subscribe to game state updates via stream
+	// Subscribe to rpc server for reciving updates
 	SubscribeStateUpdates(*emptypb.Empty, grpc.ServerStreamingServer[ServerStateUpdate]) error
+	// Sync server settings
+	Sync(context.Context, *SyncRequest) (*SyncResponse, error)
 	mustEmbedUnimplementedUpdateServiceServer()
 }
 
@@ -93,11 +93,11 @@ type UpdateServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedUpdateServiceServer struct{}
 
-func (UnimplementedUpdateServiceServer) BroadcastUpdate(context.Context, *ServerStateUpdate) (*emptypb.Empty, error) {
-	return nil, status.Error(codes.Unimplemented, "method BroadcastUpdate not implemented")
-}
 func (UnimplementedUpdateServiceServer) SubscribeStateUpdates(*emptypb.Empty, grpc.ServerStreamingServer[ServerStateUpdate]) error {
 	return status.Error(codes.Unimplemented, "method SubscribeStateUpdates not implemented")
+}
+func (UnimplementedUpdateServiceServer) Sync(context.Context, *SyncRequest) (*SyncResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Sync not implemented")
 }
 func (UnimplementedUpdateServiceServer) mustEmbedUnimplementedUpdateServiceServer() {}
 func (UnimplementedUpdateServiceServer) testEmbeddedByValue()                       {}
@@ -120,24 +120,6 @@ func RegisterUpdateServiceServer(s grpc.ServiceRegistrar, srv UpdateServiceServe
 	s.RegisterService(&UpdateService_ServiceDesc, srv)
 }
 
-func _UpdateService_BroadcastUpdate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ServerStateUpdate)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(UpdateServiceServer).BroadcastUpdate(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: UpdateService_BroadcastUpdate_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(UpdateServiceServer).BroadcastUpdate(ctx, req.(*ServerStateUpdate))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _UpdateService_SubscribeStateUpdates_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(emptypb.Empty)
 	if err := stream.RecvMsg(m); err != nil {
@@ -149,16 +131,34 @@ func _UpdateService_SubscribeStateUpdates_Handler(srv interface{}, stream grpc.S
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type UpdateService_SubscribeStateUpdatesServer = grpc.ServerStreamingServer[ServerStateUpdate]
 
+func _UpdateService_Sync_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SyncRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UpdateServiceServer).Sync(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UpdateService_Sync_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UpdateServiceServer).Sync(ctx, req.(*SyncRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // UpdateService_ServiceDesc is the grpc.ServiceDesc for UpdateService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var UpdateService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "update_state.UpdateService",
+	ServiceName: "UpdateService",
 	HandlerType: (*UpdateServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "BroadcastUpdate",
-			Handler:    _UpdateService_BroadcastUpdate_Handler,
+			MethodName: "Sync",
+			Handler:    _UpdateService_Sync_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

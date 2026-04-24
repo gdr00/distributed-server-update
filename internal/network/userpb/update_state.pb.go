@@ -22,28 +22,29 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type User struct {
+type HLC struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	WallTime      int64                  `protobuf:"varint,1,opt,name=wall_time,json=wallTime,proto3" json:"wall_time,omitempty"`
+	Logical       uint32                 `protobuf:"varint,2,opt,name=logical,proto3" json:"logical,omitempty"`
+	NodeId        string                 `protobuf:"bytes,3,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *User) Reset() {
-	*x = User{}
+func (x *HLC) Reset() {
+	*x = HLC{}
 	mi := &file_internal_network_proto_update_state_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *User) String() string {
+func (x *HLC) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*User) ProtoMessage() {}
+func (*HLC) ProtoMessage() {}
 
-func (x *User) ProtoReflect() protoreflect.Message {
+func (x *HLC) ProtoReflect() protoreflect.Message {
 	mi := &file_internal_network_proto_update_state_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -55,35 +56,110 @@ func (x *User) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use User.ProtoReflect.Descriptor instead.
-func (*User) Descriptor() ([]byte, []int) {
+// Deprecated: Use HLC.ProtoReflect.Descriptor instead.
+func (*HLC) Descriptor() ([]byte, []int) {
 	return file_internal_network_proto_update_state_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *User) GetId() string {
+func (x *HLC) GetWallTime() int64 {
 	if x != nil {
-		return x.Id
+		return x.WallTime
+	}
+	return 0
+}
+
+func (x *HLC) GetLogical() uint32 {
+	if x != nil {
+		return x.Logical
+	}
+	return 0
+}
+
+func (x *HLC) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
 	}
 	return ""
 }
 
-func (x *User) GetName() string {
+type SettingEntry struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Value         string                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	Clock         *HLC                   `protobuf:"bytes,3,opt,name=clock,proto3" json:"clock,omitempty"`
+	Deleted       bool                   `protobuf:"varint,4,opt,name=deleted,proto3" json:"deleted,omitempty"` // tombstone
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SettingEntry) Reset() {
+	*x = SettingEntry{}
+	mi := &file_internal_network_proto_update_state_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SettingEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SettingEntry) ProtoMessage() {}
+
+func (x *SettingEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_network_proto_update_state_proto_msgTypes[1]
 	if x != nil {
-		return x.Name
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SettingEntry.ProtoReflect.Descriptor instead.
+func (*SettingEntry) Descriptor() ([]byte, []int) {
+	return file_internal_network_proto_update_state_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *SettingEntry) GetKey() string {
+	if x != nil {
+		return x.Key
 	}
 	return ""
+}
+
+func (x *SettingEntry) GetValue() string {
+	if x != nil {
+		return x.Value
+	}
+	return ""
+}
+
+func (x *SettingEntry) GetClock() *HLC {
+	if x != nil {
+		return x.Clock
+	}
+	return nil
+}
+
+func (x *SettingEntry) GetDeleted() bool {
+	if x != nil {
+		return x.Deleted
+	}
+	return false
 }
 
 type ServerStateUpdate struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	ConfigUpdate  map[string]string      `protobuf:"bytes,1,rep,name=config_update,json=configUpdate,proto3" json:"config_update,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Entries       []*SettingEntry        `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ServerStateUpdate) Reset() {
 	*x = ServerStateUpdate{}
-	mi := &file_internal_network_proto_update_state_proto_msgTypes[1]
+	mi := &file_internal_network_proto_update_state_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -95,7 +171,7 @@ func (x *ServerStateUpdate) String() string {
 func (*ServerStateUpdate) ProtoMessage() {}
 
 func (x *ServerStateUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_network_proto_update_state_proto_msgTypes[1]
+	mi := &file_internal_network_proto_update_state_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -108,12 +184,100 @@ func (x *ServerStateUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ServerStateUpdate.ProtoReflect.Descriptor instead.
 func (*ServerStateUpdate) Descriptor() ([]byte, []int) {
-	return file_internal_network_proto_update_state_proto_rawDescGZIP(), []int{1}
+	return file_internal_network_proto_update_state_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *ServerStateUpdate) GetConfigUpdate() map[string]string {
+func (x *ServerStateUpdate) GetEntries() []*SettingEntry {
 	if x != nil {
-		return x.ConfigUpdate
+		return x.Entries
+	}
+	return nil
+}
+
+type SyncRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	LocalState    []*SettingEntry        `protobuf:"bytes,1,rep,name=local_state,json=localState,proto3" json:"local_state,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SyncRequest) Reset() {
+	*x = SyncRequest{}
+	mi := &file_internal_network_proto_update_state_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SyncRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SyncRequest) ProtoMessage() {}
+
+func (x *SyncRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_network_proto_update_state_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SyncRequest.ProtoReflect.Descriptor instead.
+func (*SyncRequest) Descriptor() ([]byte, []int) {
+	return file_internal_network_proto_update_state_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *SyncRequest) GetLocalState() []*SettingEntry {
+	if x != nil {
+		return x.LocalState
+	}
+	return nil
+}
+
+type SyncResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NewerEntries  []*SettingEntry        `protobuf:"bytes,1,rep,name=newer_entries,json=newerEntries,proto3" json:"newer_entries,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SyncResponse) Reset() {
+	*x = SyncResponse{}
+	mi := &file_internal_network_proto_update_state_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SyncResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SyncResponse) ProtoMessage() {}
+
+func (x *SyncResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_network_proto_update_state_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SyncResponse.ProtoReflect.Descriptor instead.
+func (*SyncResponse) Descriptor() ([]byte, []int) {
+	return file_internal_network_proto_update_state_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *SyncResponse) GetNewerEntries() []*SettingEntry {
+	if x != nil {
+		return x.NewerEntries
 	}
 	return nil
 }
@@ -122,18 +286,26 @@ var File_internal_network_proto_update_state_proto protoreflect.FileDescriptor
 
 const file_internal_network_proto_update_state_proto_rawDesc = "" +
 	"\n" +
-	")internal/network/proto/update_state.proto\x12\fupdate_state\x1a\x1bgoogle/protobuf/empty.proto\"*\n" +
-	"\x04User\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04name\"\xac\x01\n" +
-	"\x11ServerStateUpdate\x12V\n" +
-	"\rconfig_update\x18\x01 \x03(\v21.update_state.ServerStateUpdate.ConfigUpdateEntryR\fconfigUpdate\x1a?\n" +
-	"\x11ConfigUpdateEntry\x12\x10\n" +
+	")internal/network/proto/update_state.proto\x1a\x1bgoogle/protobuf/empty.proto\"U\n" +
+	"\x03HLC\x12\x1b\n" +
+	"\twall_time\x18\x01 \x01(\x03R\bwallTime\x12\x18\n" +
+	"\alogical\x18\x02 \x01(\rR\alogical\x12\x17\n" +
+	"\anode_id\x18\x03 \x01(\tR\x06nodeId\"l\n" +
+	"\fSettingEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x012\xaf\x01\n" +
-	"\rUpdateService\x12J\n" +
-	"\x0fBroadcastUpdate\x12\x1f.update_state.ServerStateUpdate\x1a\x16.google.protobuf.Empty\x12R\n" +
-	"\x15SubscribeStateUpdates\x12\x16.google.protobuf.Empty\x1a\x1f.update_state.ServerStateUpdate0\x01B\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value\x12\x1a\n" +
+	"\x05clock\x18\x03 \x01(\v2\x04.HLCR\x05clock\x12\x18\n" +
+	"\adeleted\x18\x04 \x01(\bR\adeleted\"<\n" +
+	"\x11ServerStateUpdate\x12'\n" +
+	"\aentries\x18\x01 \x03(\v2\r.SettingEntryR\aentries\"=\n" +
+	"\vSyncRequest\x12.\n" +
+	"\vlocal_state\x18\x01 \x03(\v2\r.SettingEntryR\n" +
+	"localState\"B\n" +
+	"\fSyncResponse\x122\n" +
+	"\rnewer_entries\x18\x01 \x03(\v2\r.SettingEntryR\fnewerEntries2{\n" +
+	"\rUpdateService\x12E\n" +
+	"\x15SubscribeStateUpdates\x12\x16.google.protobuf.Empty\x1a\x12.ServerStateUpdate0\x01\x12#\n" +
+	"\x04Sync\x12\f.SyncRequest\x1a\r.SyncResponseB\n" +
 	"Z\b./userpbb\x06proto3"
 
 var (
@@ -148,24 +320,29 @@ func file_internal_network_proto_update_state_proto_rawDescGZIP() []byte {
 	return file_internal_network_proto_update_state_proto_rawDescData
 }
 
-var file_internal_network_proto_update_state_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_internal_network_proto_update_state_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_internal_network_proto_update_state_proto_goTypes = []any{
-	(*User)(nil),              // 0: update_state.User
-	(*ServerStateUpdate)(nil), // 1: update_state.ServerStateUpdate
-	nil,                       // 2: update_state.ServerStateUpdate.ConfigUpdateEntry
-	(*emptypb.Empty)(nil),     // 3: google.protobuf.Empty
+	(*HLC)(nil),               // 0: HLC
+	(*SettingEntry)(nil),      // 1: SettingEntry
+	(*ServerStateUpdate)(nil), // 2: ServerStateUpdate
+	(*SyncRequest)(nil),       // 3: SyncRequest
+	(*SyncResponse)(nil),      // 4: SyncResponse
+	(*emptypb.Empty)(nil),     // 5: google.protobuf.Empty
 }
 var file_internal_network_proto_update_state_proto_depIdxs = []int32{
-	2, // 0: update_state.ServerStateUpdate.config_update:type_name -> update_state.ServerStateUpdate.ConfigUpdateEntry
-	1, // 1: update_state.UpdateService.BroadcastUpdate:input_type -> update_state.ServerStateUpdate
-	3, // 2: update_state.UpdateService.SubscribeStateUpdates:input_type -> google.protobuf.Empty
-	3, // 3: update_state.UpdateService.BroadcastUpdate:output_type -> google.protobuf.Empty
-	1, // 4: update_state.UpdateService.SubscribeStateUpdates:output_type -> update_state.ServerStateUpdate
-	3, // [3:5] is the sub-list for method output_type
-	1, // [1:3] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	0, // 0: SettingEntry.clock:type_name -> HLC
+	1, // 1: ServerStateUpdate.entries:type_name -> SettingEntry
+	1, // 2: SyncRequest.local_state:type_name -> SettingEntry
+	1, // 3: SyncResponse.newer_entries:type_name -> SettingEntry
+	5, // 4: UpdateService.SubscribeStateUpdates:input_type -> google.protobuf.Empty
+	3, // 5: UpdateService.Sync:input_type -> SyncRequest
+	2, // 6: UpdateService.SubscribeStateUpdates:output_type -> ServerStateUpdate
+	4, // 7: UpdateService.Sync:output_type -> SyncResponse
+	6, // [6:8] is the sub-list for method output_type
+	4, // [4:6] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_internal_network_proto_update_state_proto_init() }
@@ -179,7 +356,7 @@ func file_internal_network_proto_update_state_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_network_proto_update_state_proto_rawDesc), len(file_internal_network_proto_update_state_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   3,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

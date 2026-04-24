@@ -1,80 +1,68 @@
 package network
 
 import (
-	"context"
 	"sync"
-	"time"
 
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/gdr00/distributed-server-update/internal/network/userpb"
 )
 
-var (
-	subscriberMu sync.Mutex
-	subscribers  = make(map[int]chan *userpb.ServerStateUpdate)
-	nextSubID    int
-)
-
-func addSubscriber(ch chan *userpb.ServerStateUpdate) int {
-	subscriberMu.Lock()
-	defer subscriberMu.Unlock()
-	id := nextSubID
-	nextSubID++
-	subscribers[id] = ch
-	return id
+type UpdateServer struct {
+	userpb.UnimplementedUpdateServiceServer
+	mu          sync.RWMutex
+	subscribers map[int]chan *userpb.ServerStateUpdate
+	nextSubID   int
 }
 
-func removeSubscriber(id int) {
-	subscriberMu.Lock()
-	defer subscriberMu.Unlock()
-	delete(subscribers, id)
+func NewUpdateServer() *UpdateServer {
+	return &UpdateServer{
+		subscribers: make(map[int]chan *userpb.ServerStateUpdate),
+	}
 }
 
-func broadcastUpdate(update *userpb.ServerStateUpdate) {
-	subscriberMu.Lock()
-	defer subscriberMu.Unlock()
-	for _, ch := range subscribers {
+func (s *UpdateServer) Broadcast(update *userpb.ServerStateUpdate) {
+	s.mu.RLock()
+	chs := make([]chan *userpb.ServerStateUpdate, 0, len(s.subscribers))
+	for _, ch := range s.subscribers {
+		chs = append(chs, ch)
+	}
+	s.mu.RUnlock()
+
+	for _, ch := range chs {
 		select {
 		case ch <- update:
-		default:
-			// Skip client update on full buffer
+		default: // slow client, drop
 		}
 	}
 }
 
-type UpdateServer struct {
-	userpb.UnimplementedUpdateServiceServer
-}
-
-func (s *UpdateServer) BroadcastUpdate(ctx context.Context, update *userpb.ServerStateUpdate) (*emptypb.Empty, error) {
-	broadcastUpdate(update)
-	return &emptypb.Empty{}, nil
-}
-
 func (s *UpdateServer) SubscribeStateUpdates(req *emptypb.Empty, stream userpb.UpdateService_SubscribeStateUpdatesServer) error {
-	subCh := make(chan *userpb.ServerStateUpdate, 10)
-	subscriberID := addSubscriber(subCh)
-	defer func() {
-		removeSubscriber(subscriberID)
-		close(subCh)
-	}()
+	ch := make(chan *userpb.ServerStateUpdate, 10)
 
-	//Heartbeat for client connection healthcheck
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
+	s.mu.Lock()
+	id := s.nextSubID
+	s.nextSubID++
+	s.subscribers[id] = ch
+	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		delete(s.subscribers, id)
+		s.mu.Unlock()
+		close(ch)
+	}()
 
 	for {
 		select {
 		case <-stream.Context().Done():
 			return stream.Context().Err()
-		case <-ticker.C:
-			if err := stream.Send(&userpb.ServerStateUpdate{}); err != nil {
-				return err
-			}
-		case _, ok := <-subCh:
+		case update, ok := <-ch:
 			if !ok {
 				return nil
+			}
+			if err := stream.Send(update); err != nil {
+				return err
 			}
 		}
 	}
