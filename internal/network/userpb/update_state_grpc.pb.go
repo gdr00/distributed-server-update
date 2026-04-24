@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.1
 // - protoc             v7.34.1
-// source: proto/update_state.proto
+// source: internal/network/proto/update_state.proto
 
 package userpb
 
@@ -168,5 +168,5 @@ var UpdateService_ServiceDesc = grpc.ServiceDesc{
 			ServerStreams: true,
 		},
 	},
-	Metadata: "proto/update_state.proto",
+	Metadata: "internal/network/proto/update_state.proto",
 }

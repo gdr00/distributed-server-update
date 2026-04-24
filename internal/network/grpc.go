@@ -3,10 +3,11 @@ package network
 import (
 	"context"
 	"sync"
+	"time"
 
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	"github.com/gdr00/distributed-server-update/userpb"
+	"github.com/gdr00/distributed-server-update/internal/network/userpb"
 )
 
 var (
@@ -37,24 +38,21 @@ func broadcastUpdate(update *userpb.ServerStateUpdate) {
 		select {
 		case ch <- update:
 		default:
-			go func(ch chan *userpb.ServerStateUpdate, u *userpb.ServerStateUpdate) {
-				ch <- u
-			}(ch, update)
+			// Skip client update on full buffer
 		}
 	}
 }
 
-// GRPCServer implements the UpdateServer gRPC server.
-type GRPCServer struct {
+type UpdateServer struct {
 	userpb.UnimplementedUpdateServiceServer
 }
 
-func (s *GRPCServer) BroadcastUpdate(ctx context.Context, update *userpb.ServerStateUpdate) (*emptypb.Empty, error) {
+func (s *UpdateServer) BroadcastUpdate(ctx context.Context, update *userpb.ServerStateUpdate) (*emptypb.Empty, error) {
 	broadcastUpdate(update)
 	return &emptypb.Empty{}, nil
 }
 
-func (s *GRPCServer) SubscribeStateUpdates(req *emptypb.Empty, stream userpb.UpdateService_SubscribeStateUpdatesServer) error {
+func (s *UpdateServer) SubscribeStateUpdates(req *emptypb.Empty, stream userpb.UpdateService_SubscribeStateUpdatesServer) error {
 	subCh := make(chan *userpb.ServerStateUpdate, 10)
 	subscriberID := addSubscriber(subCh)
 	defer func() {
@@ -62,10 +60,18 @@ func (s *GRPCServer) SubscribeStateUpdates(req *emptypb.Empty, stream userpb.Upd
 		close(subCh)
 	}()
 
+	//Heartbeat for client connection healthcheck
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-stream.Context().Done():
-			return nil
+			return stream.Context().Err()
+		case <-ticker.C:
+			if err := stream.Send(&userpb.ServerStateUpdate{}); err != nil {
+				return err
+			}
 		case _, ok := <-subCh:
 			if !ok {
 				return nil
