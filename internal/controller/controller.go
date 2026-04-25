@@ -59,7 +59,7 @@ func (ctrl *Controller) Run(ctx context.Context) error {
 
 	// network → crdt (incoming remote updates)
 	for _, client := range ctrl.clients {
-		go client.Subscribe(ctx, ctrl.crdt.Snapshot().ToProto(), func(update *userpb.ServerStateUpdate) {
+		go client.Subscribe(ctx, network.SnapshotToProto(ctrl.crdt.Snapshot()), func(update *userpb.ServerStateUpdate) {
 			ctrl.crdt.NotifyRemote(network.FromProto(update.Entry))
 		})
 	}

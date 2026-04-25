@@ -94,3 +94,11 @@ func FromProto(e *userpb.SettingEntry) types.SettingEntry {
 		},
 	}
 }
+
+func SnapshotToProto(s types.Snapshot) []*userpb.SettingEntry {
+	entries := make([]*userpb.SettingEntry, 0, len(s.Entries))
+	for _, e := range s.Entries {
+		entries = append(entries, ToProto(e))
+	}
+	return entries
+}
