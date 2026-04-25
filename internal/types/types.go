@@ -26,3 +26,9 @@ type SettingEntry struct {
 type Snapshot struct {
 	Entries map[string]SettingEntry
 }
+
+type Config struct {
+	PeerAddresses []string
+	SettingsPath  string
+	GRPCPort      uint16
+}

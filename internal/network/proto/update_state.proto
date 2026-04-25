@@ -16,10 +16,11 @@ message SettingEntry {
 }
 
 message ServerStateUpdate {
-  repeated SettingEntry entries = 1;
+  SettingEntry entry = 1;
 }
 
 message SyncRequest  { repeated SettingEntry local_state  = 1; }
+
 message SyncResponse { repeated SettingEntry newer_entries = 1; }
 
 // UpdateService handles server state updates and broadcasts them to connected clients.

@@ -152,7 +152,7 @@ func (x *SettingEntry) GetDeleted() bool {
 
 type ServerStateUpdate struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Entries       []*SettingEntry        `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
+	Entry         *SettingEntry          `protobuf:"bytes,1,opt,name=entry,proto3" json:"entry,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -187,9 +187,9 @@ func (*ServerStateUpdate) Descriptor() ([]byte, []int) {
 	return file_internal_network_proto_update_state_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *ServerStateUpdate) GetEntries() []*SettingEntry {
+func (x *ServerStateUpdate) GetEntry() *SettingEntry {
 	if x != nil {
-		return x.Entries
+		return x.Entry
 	}
 	return nil
 }
@@ -295,9 +295,9 @@ const file_internal_network_proto_update_state_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value\x12\x1a\n" +
 	"\x05clock\x18\x03 \x01(\v2\x04.HLCR\x05clock\x12\x18\n" +
-	"\adeleted\x18\x04 \x01(\bR\adeleted\"<\n" +
-	"\x11ServerStateUpdate\x12'\n" +
-	"\aentries\x18\x01 \x03(\v2\r.SettingEntryR\aentries\"=\n" +
+	"\adeleted\x18\x04 \x01(\bR\adeleted\"8\n" +
+	"\x11ServerStateUpdate\x12#\n" +
+	"\x05entry\x18\x01 \x01(\v2\r.SettingEntryR\x05entry\"=\n" +
 	"\vSyncRequest\x12.\n" +
 	"\vlocal_state\x18\x01 \x03(\v2\r.SettingEntryR\n" +
 	"localState\"B\n" +
@@ -331,7 +331,7 @@ var file_internal_network_proto_update_state_proto_goTypes = []any{
 }
 var file_internal_network_proto_update_state_proto_depIdxs = []int32{
 	0, // 0: SettingEntry.clock:type_name -> HLC
-	1, // 1: ServerStateUpdate.entries:type_name -> SettingEntry
+	1, // 1: ServerStateUpdate.entry:type_name -> SettingEntry
 	1, // 2: SyncRequest.local_state:type_name -> SettingEntry
 	1, // 3: SyncResponse.newer_entries:type_name -> SettingEntry
 	5, // 4: UpdateService.SubscribeStateUpdates:input_type -> google.protobuf.Empty

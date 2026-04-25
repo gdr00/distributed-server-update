@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"time"
 
 	"github.com/gdr00/distributed-server-update/internal/network/userpb"
@@ -16,6 +17,22 @@ import (
 type Client struct {
 	conn   *grpc.ClientConn
 	client userpb.UpdateServiceClient
+}
+
+func NewClients(addrs []string) []*Client {
+	clients := make([]*Client, 0, len(addrs))
+	for _, addr := range addrs {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil || host == "" || port == "" {
+			log.Fatalf("invalid peer address %q: %v", addr, err)
+		}
+		c, err := NewClient(addr)
+		if err != nil {
+			log.Fatalf("failed to create client for %s: %v", addr, err)
+		}
+		clients = append(clients, c)
+	}
+	return clients
 }
 
 func NewClient(serverAddress string) (*Client, error) {
@@ -53,7 +70,7 @@ func (c *Client) sync(ctx context.Context, localState []*userpb.SettingEntry, on
 		return fmt.Errorf("sync failed: %w", err)
 	}
 	for _, entry := range resp.NewerEntries {
-		onUpdate(&userpb.ServerStateUpdate{Entries: []*userpb.SettingEntry{entry}})
+		onUpdate(&userpb.ServerStateUpdate{Entry: entry})
 	}
 	return nil
 }

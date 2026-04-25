@@ -6,6 +6,7 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/gdr00/distributed-server-update/internal/network/userpb"
+	"github.com/gdr00/distributed-server-update/internal/types"
 )
 
 type UpdateServer struct {
@@ -65,5 +66,31 @@ func (s *UpdateServer) SubscribeStateUpdates(req *emptypb.Empty, stream userpb.U
 				return err
 			}
 		}
+	}
+}
+
+func ToProto(e types.SettingEntry) *userpb.SettingEntry {
+	return &userpb.SettingEntry{
+		Key:     e.Key,
+		Value:   e.Value,
+		Deleted: e.Deleted,
+		Clock: &userpb.HLC{
+			WallTime: e.Clock.WallTime,
+			Logical:  e.Clock.Logical,
+			NodeId:   e.Clock.NodeID,
+		},
+	}
+}
+
+func FromProto(e *userpb.SettingEntry) types.SettingEntry {
+	return types.SettingEntry{
+		Key:     e.Key,
+		Value:   e.Value,
+		Deleted: e.Deleted,
+		Clock: types.HLC{
+			WallTime: e.Clock.WallTime,
+			Logical:  e.Clock.Logical,
+			NodeID:   e.Clock.NodeId,
+		},
 	}
 }
