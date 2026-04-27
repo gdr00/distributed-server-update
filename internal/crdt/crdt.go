@@ -22,8 +22,9 @@ type CRDT struct {
 	queryCh     chan queryRequest             // channel to query for key value pairs in settings
 }
 
-func New() *CRDT {
+func New(nodeID string) *CRDT {
 	return &CRDT{
+		clock:       types.HLC{NodeID: nodeID},
 		state:       make(map[string]types.SettingEntry),
 		localCh:     make(chan types.SettingEntry, 10),
 		remoteCh:    make(chan types.SettingEntry, 10),
