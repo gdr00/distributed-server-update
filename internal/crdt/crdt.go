@@ -13,13 +13,12 @@ type queryRequest struct {
 }
 
 type CRDT struct {
-	nodeID      string                        // current node ID
 	clock       types.HLC                     // clock to establish an update hierarchy
 	state       map[string]types.SettingEntry // private map of up to date settings
 	localCh     chan types.SettingEntry       // channel for local setting updates
 	remoteCh    chan types.SettingEntry       // channel for remote setting updates
 	broadcastCh chan types.SettingEntry       // send update to the subscribers
-	fileCh      chan types.Snapshot           // send full setting sync
+	fileCh      chan types.SettingEntry       // send setting sync to local
 	queryCh     chan queryRequest             // channel to query for key value pairs in settings
 }
 
@@ -29,7 +28,7 @@ func New() *CRDT {
 		localCh:     make(chan types.SettingEntry, 10),
 		remoteCh:    make(chan types.SettingEntry, 10),
 		broadcastCh: make(chan types.SettingEntry, 10),
-		fileCh:      make(chan types.Snapshot, 10),
+		fileCh:      make(chan types.SettingEntry, 10),
 		queryCh:     make(chan queryRequest),
 	}
 }
@@ -50,7 +49,7 @@ func (c *CRDT) Updates() <-chan types.SettingEntry {
 }
 
 // for logic package — read snapshots to write to file
-func (c *CRDT) FileSync() <-chan types.Snapshot {
+func (c *CRDT) FileSync() <-chan types.SettingEntry {
 	return c.fileCh
 }
 
@@ -89,7 +88,7 @@ func (c *CRDT) Run(ctx context.Context) {
 		case entry := <-c.remoteCh:
 			c.clock.Update(entry.Clock)
 			if c.merge(entry) {
-				c.fileCh <- c.Snapshot()
+				c.fileCh <- entry
 			}
 		case req := <-c.queryCh:
 			req.resp <- c.state[req.key]
