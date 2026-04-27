@@ -2,9 +2,14 @@ package crdt
 
 import (
 	"context"
+	"log"
 	"maps"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/gdr00/distributed-server-update/internal/types"
+	"github.com/google/uuid"
 )
 
 type queryRequest struct {
@@ -22,9 +27,9 @@ type CRDT struct {
 	queryCh     chan queryRequest             // channel to query for key value pairs in settings
 }
 
-func New(nodeID string) *CRDT {
+func New() *CRDT {
 	return &CRDT{
-		clock:       types.HLC{NodeID: nodeID},
+		clock:       types.HLC{NodeID: loadOrCreateNodeID()},
 		state:       make(map[string]types.SettingEntry),
 		localCh:     make(chan types.SettingEntry, 10),
 		remoteCh:    make(chan types.SettingEntry, 10),
@@ -100,4 +105,30 @@ func (c *CRDT) Run(ctx context.Context) {
 			return
 		}
 	}
+}
+
+func loadOrCreateNodeID() string {
+	dir := filepath.Join(os.Getenv("HOME"), ".server-conf")
+	path := filepath.Join(dir, "node_id")
+
+	data, err := os.ReadFile(path)
+	if err == nil {
+		return strings.TrimSpace(string(data))
+	}
+
+	if !os.IsNotExist(err) {
+		log.Fatalf("failed to read node_id: %v", err)
+	}
+
+	// file doesn't exist, generate and persist
+	id := uuid.New().String()
+
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		log.Fatalf("failed to create config dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(id), 0600); err != nil {
+		log.Fatalf("failed to write node_id: %v", err)
+	}
+
+	return id
 }
