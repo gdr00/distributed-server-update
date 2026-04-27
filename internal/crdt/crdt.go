@@ -13,6 +13,8 @@ type queryRequest struct {
 }
 
 type CRDT struct {
+	nodeID      string                        // current node ID
+	clock       types.HLC                     // clock to establish an update hierarchy
 	state       map[string]types.SettingEntry // private map of up to date settings
 	localCh     chan types.SettingEntry       // channel for local setting updates
 	remoteCh    chan types.SettingEntry       // channel for remote setting updates
@@ -79,10 +81,13 @@ func (c *CRDT) Run(ctx context.Context) {
 	for {
 		select {
 		case entry := <-c.localCh:
+			c.clock.Tick()        // on event update clock
+			entry.Clock = c.clock // update entry clock to the current system's
 			if c.merge(entry) {
 				c.broadcastCh <- entry
 			}
 		case entry := <-c.remoteCh:
+			c.clock.Update(entry.Clock)
 			if c.merge(entry) {
 				c.fileCh <- c.Snapshot()
 			}
