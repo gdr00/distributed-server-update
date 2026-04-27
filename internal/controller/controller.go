@@ -15,7 +15,7 @@ type Controller struct {
 	crdt    *crdt.CRDT
 	network *network.UpdateServer
 	clients []*network.Client
-	logic   *logic.Logic
+	//logic   *logic.Logic
 }
 
 func New(cfg types.Config) *Controller {
@@ -24,7 +24,7 @@ func New(cfg types.Config) *Controller {
 		crdt:    crdt.New(),
 		network: network.NewUpdateServer(),
 		clients: network.NewClients(cfg.PeerAddresses),
-		logic:   logic.New(cfg.SettingsPath),
+		//logic:   logic.New(cfg.SettingsPath),
 	}
 }
 
@@ -36,10 +36,17 @@ func (ctrl *Controller) Run(ctx context.Context) error {
 
 	go ctrl.crdt.Run(ctx)
 
-	// logic → crdt
-	go ctrl.logic.Watch(ctx, func(entry types.SettingEntry) {
-		ctrl.crdt.NotifyLocal(entry)
-	})
+	// logic → crdt //TODO
+	//go ctrl.logic.Watch(ctx, func(entry types.SettingEntry) {
+	//	ctrl.crdt.NotifyLocal(entry)
+	//})
+
+	// crdt → logic (write file on remote change) //TODO
+	//go func() {
+	//	for snapshot := range ctrl.crdt.FileSync() {
+	//		ctrl.logic.Write(snapshot)
+	//	}
+	//}()
 
 	// crdt → network (broadcast to peers)
 	go func() {
@@ -47,13 +54,6 @@ func (ctrl *Controller) Run(ctx context.Context) error {
 			ctrl.network.Broadcast(&userpb.ServerStateUpdate{
 				Entry: network.ToProto(entry),
 			})
-		}
-	}()
-
-	// crdt → logic (write file on remote change)
-	go func() {
-		for snapshot := range ctrl.crdt.FileSync() {
-			ctrl.logic.Write(snapshot)
 		}
 	}()
 

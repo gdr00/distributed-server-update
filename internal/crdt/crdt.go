@@ -80,17 +80,20 @@ func (c *CRDT) Snapshot() types.Snapshot {
 func (c *CRDT) Run(ctx context.Context) {
 	for {
 		select {
+		// I have incoming changes from local state
 		case entry := <-c.localCh:
 			c.clock.Tick()        // on event update clock
 			entry.Clock = c.clock // update entry clock to the current system's
 			if c.merge(entry) {
 				c.broadcastCh <- entry
 			}
+		// I have incoming changes from one of the peers I am subscribed to
 		case entry := <-c.remoteCh:
 			c.clock.Update(entry.Clock)
 			if c.merge(entry) {
 				c.fileCh <- entry
 			}
+		// I recive a query about current state of an entry
 		case req := <-c.queryCh:
 			req.resp <- c.state[req.key]
 		case <-ctx.Done():
