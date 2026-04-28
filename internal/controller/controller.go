@@ -24,13 +24,16 @@ type Controller struct {
 }
 
 func New(cfg types.Config) *Controller {
-	return &Controller{
+	ctrl := &Controller{
 		cfg:     cfg,
 		crdt:    crdt.New(cfg.CRDTWorkdir),
-		network: network.NewUpdateServer(),
 		clients: network.NewClients(cfg.PeerAddresses),
 		logic:   logic.New(cfg.SettingsPath),
 	}
+	ctrl.network = network.NewUpdateServer(func() types.Snapshot {
+		return ctrl.crdt.Snapshot()
+	})
+	return ctrl
 }
 
 // Init node with the "master" configuration when new system is initialized

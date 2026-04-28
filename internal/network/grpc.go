@@ -1,6 +1,7 @@
 package network
 
 import (
+	"context"
 	"sync"
 
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -14,11 +15,13 @@ type UpdateServer struct {
 	mu          sync.RWMutex
 	subscribers map[int]chan *userpb.ServerStateUpdate
 	nextSubID   int
+	getSnapshot func() types.Snapshot
 }
 
-func NewUpdateServer() *UpdateServer {
+func NewUpdateServer(getSnapshot func() types.Snapshot) *UpdateServer {
 	return &UpdateServer{
 		subscribers: make(map[int]chan *userpb.ServerStateUpdate),
+		getSnapshot: getSnapshot,
 	}
 }
 
@@ -36,6 +39,25 @@ func (s *UpdateServer) Broadcast(update *userpb.ServerStateUpdate) {
 		default: // slow client, drop
 		}
 	}
+}
+
+func (s *UpdateServer) Sync(ctx context.Context, req *userpb.SyncRequest) (*userpb.SyncResponse, error) {
+	snapshot := s.getSnapshot()
+
+	incoming := make(map[string]types.SettingEntry, len(req.LocalState))
+	for _, e := range req.LocalState {
+		incoming[e.Key] = FromProto(e)
+	}
+
+	var newer []*userpb.SettingEntry
+	for _, local := range snapshot.Entries {
+		remote, exists := incoming[local.Key]
+		if !exists || remote.Clock.Before(local.Clock) {
+			newer = append(newer, ToProto(local))
+		}
+	}
+
+	return &userpb.SyncResponse{NewerEntries: newer}, nil
 }
 
 func (s *UpdateServer) SubscribeStateUpdates(req *emptypb.Empty, stream userpb.UpdateService_SubscribeStateUpdatesServer) error {
