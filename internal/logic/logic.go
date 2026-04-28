@@ -3,6 +3,7 @@ package logic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -37,7 +38,7 @@ func (l *Logic) Read() (types.Settings, error) {
 // Write entries to file
 func (l *Logic) Write(entry types.SettingEntry) error {
 	settings, err := l.Read()
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("failed to read settings before write: %w", err)
 	}
 	if settings == nil {
