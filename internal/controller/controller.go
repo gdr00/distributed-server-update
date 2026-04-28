@@ -37,12 +37,12 @@ func New(cfg types.Config) *Controller {
 }
 
 // Init node with the "master" configuration when new system is initialized
-func InitNode(settingsPath string, workDir string) error {
-	entries, err := logic.New(settingsPath).Read()
+func InitNode(c types.Config) error {
+	entries, err := logic.New(c.SettingsPath).Read()
 	if err != nil {
 		return fmt.Errorf("failed to read settings: %w", err)
 	}
-	if err := crdt.Init(entries, workDir); err != nil {
+	if err := crdt.Init(entries, c.CRDTWorkdir); err != nil {
 		return fmt.Errorf("failed to init crdt: %w", err)
 	}
 	return nil

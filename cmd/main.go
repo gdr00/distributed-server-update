@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"path/filepath"
 
 	"github.com/gdr00/distributed-server-update/internal/controller"
 	"github.com/gdr00/distributed-server-update/internal/types"
@@ -15,23 +14,28 @@ import (
 func main() {
 
 	initCmd := flag.NewFlagSet("init", flag.ExitOnError)
-	initSettings := initCmd.String("settings", "", "path to settings file")
-	initWorkDir := initCmd.String("crtdWorkdir", defaultWorkDir(), "path to crdt work directory")
+	initConfig := initCmd.String("config", "", "path to config file")
+	initEmpty := initCmd.Bool("empty", false, "init empty replica")
 
-	startWorkDir := flag.String("crdtWorkDir", defaultWorkDir(), "path to crdt work directory")
+	flag.Parse()
+	cfg, err := types.LoadConfig(*initConfig)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	if len(os.Args) > 1 && os.Args[1] == "init" {
 		initCmd.Parse(os.Args[2:])
-		if err := controller.InitNode(*initSettings, *initWorkDir); err != nil {
-			log.Fatal(err)
+		if *initEmpty {
+			// just create node_id and empty crdt_state.json
+			if err := controller.InitEmptyNode(cfg.CRDTWorkdir); err != nil {
+				log.Fatal(err)
+			}
+		} else {
+			if err := controller.InitNode(cfg); err != nil {
+				log.Fatal(err)
+			}
 		}
 		return
-	}
-
-	flag.Parse()
-	cfg, err := types.LoadConfig(*startWorkDir)
-	if err != nil {
-		log.Fatal(err)
 	}
 
 	ctrl := controller.New(cfg)
@@ -43,12 +47,4 @@ func main() {
 		log.Fatal(err)
 	}
 
-}
-
-func defaultWorkDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		log.Fatalf("failed to get home dir: %v", err)
-	}
-	return filepath.Join(home, ".crtd-conf")
 }

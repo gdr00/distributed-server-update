@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 )
 
@@ -70,10 +69,9 @@ type Config struct {
 	GRPCPort      uint16
 }
 
-func LoadConfig(workDir string) (Config, error) {
-	path := filepath.Join(workDir, "config.json")
+func LoadConfig(configPath string) (Config, error) {
+	data, err := os.ReadFile(configPath)
 
-	data, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("failed to read config file: %w", err)
 	}
