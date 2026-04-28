@@ -1,6 +1,12 @@
 package types
 
-import "time"
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+)
 
 type HLC struct {
 	WallTime int64
@@ -43,6 +49,8 @@ func (h *HLC) Tick() {
 	}
 }
 
+type Settings map[string]string
+
 type SettingEntry struct {
 	Key     string
 	Value   string
@@ -57,5 +65,22 @@ type Snapshot struct {
 type Config struct {
 	PeerAddresses []string
 	SettingsPath  string
+	CRDTWorkdir   string
 	GRPCPort      uint16
+}
+
+func LoadConfig(workDir string) (Config, error) {
+	path := filepath.Join(workDir, "config.json")
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return Config{}, fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	return cfg, nil
 }
