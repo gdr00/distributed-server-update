@@ -26,14 +26,15 @@ func (a HLC) Before(b HLC) bool {
 
 func (h *HLC) Update(received HLC) {
 	wall := max(h.WallTime, received.WallTime)
-	// Case equal clocks -> increment logical to max +1
-	if wall == h.WallTime && wall == received.WallTime {
+
+	if h.WallTime == received.WallTime {
+		// Case equal clocks -> increment logical to max +1
 		h.Logical = max(h.Logical, received.Logical) + 1
-		// Case local clock is greater -> increment LL (local logical)
 	} else if wall == h.WallTime {
+		// Case local clock is greater -> increment LL (local logical)
 		h.Logical++
-		// Case remote clock is greater -> set local clock to remote and increment logical
 	} else {
+		// Case remote clock is greater -> set local clock to remote and increment logical
 		h.WallTime = wall
 		h.Logical = received.Logical + 1
 	}
