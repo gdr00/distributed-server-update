@@ -18,6 +18,7 @@ func setupWorkDir(t *testing.T, settings types.Settings) (string, string) {
 	workDir := t.TempDir()
 	settingsDir := t.TempDir()
 	settingsPath := filepath.Join(settingsDir, "settings.json")
+	cfg := types.Config{SettingsPath: settingsPath, CRDTWorkdir: workDir}
 
 	// write settings file
 	data, _ := json.MarshalIndent(settings, "", "  ")
@@ -26,7 +27,7 @@ func setupWorkDir(t *testing.T, settings types.Settings) (string, string) {
 	}
 
 	// init the node
-	if err := InitNode(settingsPath, workDir); err != nil {
+	if err := InitNode(cfg); err != nil {
 		t.Fatalf("InitNode failed: %v", err)
 	}
 
@@ -59,11 +60,12 @@ func TestInitNode_CreatesNodeIDAndState(t *testing.T) {
 	workDir := t.TempDir()
 	settingsDir := t.TempDir()
 	settingsPath := filepath.Join(settingsDir, "settings.json")
+	cfg := types.Config{SettingsPath: settingsPath, CRDTWorkdir: workDir}
 
 	data, _ := json.MarshalIndent(types.Settings{"theme": "dark"}, "", "  ")
 	os.WriteFile(settingsPath, data, 0600)
 
-	if err := InitNode(settingsPath, workDir); err != nil {
+	if err := InitNode(cfg); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -79,10 +81,11 @@ func TestInitNode_StateContainsSettings(t *testing.T) {
 	workDir := t.TempDir()
 	settingsDir := t.TempDir()
 	settingsPath := filepath.Join(settingsDir, "settings.json")
+	cfg := types.Config{SettingsPath: settingsPath, CRDTWorkdir: workDir}
 
 	data, _ := json.MarshalIndent(types.Settings{"theme": "dark", "lang": "en"}, "", "  ")
 	os.WriteFile(settingsPath, data, 0600)
-	InitNode(settingsPath, workDir)
+	InitNode(cfg)
 
 	stateData, _ := os.ReadFile(filepath.Join(workDir, "crdt_state.json"))
 	var state map[string]types.SettingEntry
@@ -100,10 +103,11 @@ func TestInitNode_EntriesHaveNonZeroClock(t *testing.T) {
 	workDir := t.TempDir()
 	settingsDir := t.TempDir()
 	settingsPath := filepath.Join(settingsDir, "settings.json")
+	cfg := types.Config{SettingsPath: settingsPath, CRDTWorkdir: workDir}
 
 	data, _ := json.MarshalIndent(types.Settings{"theme": "dark"}, "", "  ")
 	os.WriteFile(settingsPath, data, 0600)
-	InitNode(settingsPath, workDir)
+	InitNode(cfg)
 
 	stateData, _ := os.ReadFile(filepath.Join(workDir, "crdt_state.json"))
 	var state map[string]types.SettingEntry
@@ -119,7 +123,8 @@ func TestInitNode_EntriesHaveNonZeroClock(t *testing.T) {
 
 func TestInitNode_MissingSettingsFileReturnsError(t *testing.T) {
 	workDir := t.TempDir()
-	err := InitNode("/nonexistent/settings.json", workDir)
+	cfg := types.Config{SettingsPath: "/nonexistent/settings.json", CRDTWorkdir: workDir}
+	err := InitNode(cfg)
 	if err == nil {
 		t.Fatal("expected error for missing settings file")
 	}

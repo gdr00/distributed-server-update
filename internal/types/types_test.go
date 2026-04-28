@@ -359,7 +359,7 @@ func TestLoadConfig_Success(t *testing.T) {
 	dir := t.TempDir()
 	configJSON := `{
 		"PeerAddresses": ["peer1:50051", "peer2:50051"],
-		"SettingsPath": "/data/settings",
+		"SettingsPath": "/data/settings.json",
 		"CRDTWorkdir": "/data/crdt",
 		"GRPCPort": 9090
 	}`
@@ -368,7 +368,7 @@ func TestLoadConfig_Success(t *testing.T) {
 		t.Fatalf("failed to write test config: %v", err)
 	}
 
-	cfg, err := LoadConfig(dir)
+	cfg, err := LoadConfig(filepath.Join(dir, "config.json"))
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
@@ -378,8 +378,8 @@ func TestLoadConfig_Success(t *testing.T) {
 	if cfg.PeerAddresses[0] != "peer1:50051" {
 		t.Errorf("PeerAddresses[0] = %s, want peer1:50051", cfg.PeerAddresses[0])
 	}
-	if cfg.SettingsPath != "/data/settings" {
-		t.Errorf("SettingsPath = %s, want /data/settings", cfg.SettingsPath)
+	if cfg.SettingsPath != "/data/settings.json" {
+		t.Errorf("SettingsPath = %s, want /data/settings.json", cfg.SettingsPath)
 	}
 	if cfg.CRDTWorkdir != "/data/crdt" {
 		t.Errorf("CRDTWorkdir = %s, want /data/crdt", cfg.CRDTWorkdir)
@@ -430,7 +430,7 @@ func TestLoadConfig_MinimalConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to write test config: %v", err)
 	}
-	cfg, err := LoadConfig(dir)
+	cfg, err := LoadConfig(filepath.Join(dir, "config.json"))
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
@@ -752,7 +752,7 @@ func TestLoadConfig_ExtraFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to write test config: %v", err)
 	}
-	cfg, err := LoadConfig(dir)
+	cfg, err := LoadConfig(filepath.Join(dir, "config.json"))
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
@@ -770,7 +770,7 @@ func TestLoadConfig_UnicodeValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to write test config: %v", err)
 	}
-	cfg, err := LoadConfig(dir)
+	cfg, err := LoadConfig(filepath.Join(dir, "config.json"))
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
