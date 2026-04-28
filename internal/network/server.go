@@ -40,7 +40,7 @@ func StartRPCServer(ctx context.Context, us *UpdateServer, port uint16) error {
 	}()
 
 	go func() {
-		if err := grpcServer.Serve(lis); err != grpc.ErrServerStopped {
+		if err := grpcServer.Serve(lis); err != nil && err != grpc.ErrServerStopped {
 			log.Fatalf("failed to serve: %v", err)
 		}
 	}()
