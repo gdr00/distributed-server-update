@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sync"
+	"sync/atomic"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/gdr00/distributed-server-update/internal/types"
@@ -14,6 +16,8 @@ import (
 
 type Logic struct {
 	settingsPath string
+	mu           sync.RWMutex
+	writing      atomic.Bool
 }
 
 func New(settingsPath string) *Logic {
@@ -22,6 +26,9 @@ func New(settingsPath string) *Logic {
 
 // Read parses the settings file into a plain key-value map
 func (l *Logic) Read() (types.Settings, error) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
 	data, err := os.ReadFile(l.settingsPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read settings file: %w", err)
@@ -37,6 +44,12 @@ func (l *Logic) Read() (types.Settings, error) {
 
 // Write entries to file
 func (l *Logic) Write(entry types.SettingEntry) error {
+	l.writing.Store(true)
+	defer l.writing.Store(false)
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	settings, err := l.Read()
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("failed to read settings before write: %w", err)
@@ -76,6 +89,9 @@ func (l *Logic) Watch(ctx context.Context, onChange func(types.SettingEntry)) er
 				return nil
 			}
 			if event.Has(fsnotify.Write) {
+				if l.writing.Load() {
+					continue // we were writing
+				}
 				entries, err := l.Read()
 				if err != nil {
 					log.Printf("failed to read settings: %v", err)

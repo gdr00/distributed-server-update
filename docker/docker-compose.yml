@@ -1,0 +1,82 @@
+volumes:
+  server-bin:
+
+services:
+  builder:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    volumes:
+      - server-bin:/app
+
+  node1-init:
+    image: alpine:latest
+    command: sh -c "rm -rf /data/ctrd && /app/server init --config=/config/cfg.json"
+    volumes:
+      - server-bin:/app
+      - ../tests/testdata/node1:/data
+      - ../tests/testdata/node1/config:/config
+    depends_on:
+      builder:
+        condition: service_completed_successfully
+
+  node2-init:
+    image: alpine:latest
+    command: sh -c "rm -rf /data/ctrd && /app/server init --empty --config=/config/cfg.json"
+    volumes:
+      - server-bin:/app
+      - ../tests/testdata/node2:/data
+      - ../tests/testdata/node2/config:/config
+    depends_on:
+      builder:
+        condition: service_completed_successfully
+
+  node3-init:
+    image: alpine:latest
+    command: sh -c "rm -rf /data/ctrd && /app/server init --empty --config=/config/cfg.json"
+    volumes:
+      - server-bin:/app
+      - ../tests/testdata/node3:/data
+      - ../tests/testdata/node3/config:/config
+    depends_on:
+      builder:
+        condition: service_completed_successfully
+
+  node1:
+      image: alpine:latest
+      command: /app/server --config=/config/cfg.json
+      ports:
+        - "9001:9000"
+      volumes:
+        - server-bin:/app
+        - ../tests/testdata/node1:/data
+        - ../tests/testdata/node1/config:/config
+      depends_on:
+        node1-init:
+          condition: service_completed_successfully
+
+  node2:
+    image: alpine:latest
+    command: /app/server --config=/config/cfg.json
+    ports:
+      - "9002:9000"
+    volumes:
+      - server-bin:/app
+      - ../tests/testdata/node2:/data
+      - ../tests/testdata/node2/config:/config
+    depends_on:
+      node2-init:
+        condition: service_completed_successfully
+
+  node3:
+    image: alpine:latest
+    command: /app/server --config=/config/cfg.json
+    ports:
+      - "9003:9000"
+    volumes:
+      - server-bin:/app
+      - ../tests/testdata/node3:/data
+      - ../tests/testdata/node3/config:/config
+    depends_on:
+      node3-init:
+        condition: service_completed_successfully
