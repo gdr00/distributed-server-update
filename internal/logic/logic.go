@@ -110,6 +110,7 @@ func (l *Logic) Watch(ctx context.Context, onChange func(types.SettingEntry)) er
 				if debounce != nil {
 					debounce.Stop()
 				}
+				// avoid read on partial writes to file
 				debounce = time.AfterFunc(100*time.Millisecond, func() {
 					l.applyChanges(onChange)
 				})
