@@ -52,9 +52,10 @@ func NewClient(serverAddress string) (*Client, error) {
 
 func (c *Client) Close() error { return c.conn.Close() }
 
-func (c *Client) Subscribe(ctx context.Context, localState []*userpb.SettingEntry, onUpdate func(*userpb.ServerStateUpdate)) {
+func (c *Client) Subscribe(ctx context.Context, getSnapshot func() []*userpb.SettingEntry, onUpdate func(*userpb.ServerStateUpdate)) {
 	for {
-		if err := c.runStream(ctx, localState, onUpdate); err != nil {
+		s := getSnapshot()
+		if err := c.runStream(ctx, s, onUpdate); err != nil {
 			if ctx.Err() != nil {
 				return
 			}
