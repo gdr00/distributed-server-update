@@ -76,9 +76,13 @@ func (ctrl *Controller) Run(ctx context.Context) error {
 	go ctrl.crdt.Run(ctx)
 
 	// logic → crdt
-	go ctrl.logic.Watch(ctx, func(entry types.SettingEntry) {
-		ctrl.crdt.NotifyLocal(entry)
-	})
+	go func() {
+		if err := ctrl.logic.Watch(ctx, func(entry types.SettingEntry) {
+			ctrl.crdt.NotifyLocal(entry)
+		}); err != nil {
+			log.Printf("file watcher error: %v", err)
+		}
+	}()
 
 	// crdt → logic (write file on remote change)
 	go func() {
