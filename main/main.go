@@ -28,7 +28,7 @@ func main() {
 		}
 		if *initEmpty {
 			// just create node_id and empty crdt_state.json
-			if err := controller.InitEmptyNode(cfg.CRDTWorkdir); err != nil {
+			if err := controller.InitEmptyNode(cfg); err != nil {
 				log.Fatal(err)
 			}
 		} else {

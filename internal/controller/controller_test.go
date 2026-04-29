@@ -34,15 +34,6 @@ func setupWorkDir(t *testing.T, settings types.Settings) (string, string) {
 	return workDir, settingsPath
 }
 
-func setupEmptyWorkDir(t *testing.T) string {
-	t.Helper()
-	workDir := t.TempDir()
-	if err := InitEmptyNode(workDir); err != nil {
-		t.Fatalf("InitEmptyNode failed: %v", err)
-	}
-	return workDir
-}
-
 func newTestController(t *testing.T, workDir string, settingsPath string, port uint16, peers []string) *Controller {
 	t.Helper()
 	cfg := types.Config{
@@ -133,31 +124,40 @@ func TestInitNode_MissingSettingsFileReturnsError(t *testing.T) {
 // InitEmptyNode tests
 
 func TestInitEmptyNode_CreatesFiles(t *testing.T) {
-	workDir := t.TempDir()
-	if err := InitEmptyNode(workDir); err != nil {
+	cfg := types.Config{
+		CRDTWorkdir:  t.TempDir(),
+		SettingsPath: filepath.Join(t.TempDir(), "settings.json"),
+	}
+	if err := InitEmptyNode(cfg); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(workDir, "node_id")); err != nil {
+	if _, err := os.Stat(filepath.Join(cfg.CRDTWorkdir, "node_id")); err != nil {
 		t.Fatal("expected node_id to exist")
 	}
 
-	stateData, err := os.ReadFile(filepath.Join(workDir, "crdt_state.json"))
+	stateData, err := os.ReadFile(filepath.Join(cfg.CRDTWorkdir, "crdt_state.json"))
 	if err != nil {
 		t.Fatal("expected crdt_state.json to exist")
 	}
 	if string(stateData) != "{}" {
 		t.Fatalf("expected empty state, got %s", stateData)
 	}
+
+	if _, err := os.Stat(cfg.SettingsPath); err != nil {
+		t.Fatal("expected settings.json to exist")
+	}
 }
 
 func TestInitEmptyNode_CreatesWorkDir(t *testing.T) {
-	base := t.TempDir()
-	workDir := filepath.Join(base, "nested", "dir")
-	if err := InitEmptyNode(workDir); err != nil {
+	cfg := types.Config{
+		CRDTWorkdir:  filepath.Join(t.TempDir(), "nested", "dir"),
+		SettingsPath: filepath.Join(t.TempDir(), "nested", "dir", "settings.json"),
+	}
+	if err := InitEmptyNode(cfg); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if _, err := os.Stat(workDir); err != nil {
+	if _, err := os.Stat(cfg.CRDTWorkdir); err != nil {
 		t.Fatal("expected workDir to be created")
 	}
 }

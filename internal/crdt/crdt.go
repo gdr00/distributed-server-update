@@ -112,17 +112,6 @@ func (c *CRDT) Get(key string) types.SettingEntry {
 	return <-req.resp
 }
 
-// Merge 2 edits with LWW logic
-// true when incoming is newer
-func (c *CRDT) merge(incoming types.SettingEntry) (changed bool) {
-	existing, ok := c.state[incoming.Key]
-	if ok && incoming.Clock.Before(existing.Clock) {
-		return false
-	}
-	c.state[incoming.Key] = incoming
-	return true
-}
-
 func (c *CRDT) snapshot() types.Snapshot {
 	entries := make(map[string]types.SettingEntry, len(c.state))
 	maps.Copy(entries, c.state)
@@ -133,6 +122,17 @@ func (c *CRDT) Snapshot() types.Snapshot {
 	req := snapshotRequest{resp: make(chan types.Snapshot, 1)}
 	c.snapshotCh <- req
 	return <-req.resp
+}
+
+// Merge 2 edits with LWW logic
+// true when incoming is newer
+func (c *CRDT) merge(incoming types.SettingEntry) (changed bool) {
+	existing, ok := c.state[incoming.Key]
+	if ok && incoming.Clock.Before(existing.Clock) {
+		return false
+	}
+	c.state[incoming.Key] = incoming
+	return true
 }
 
 func (c *CRDT) Run(ctx context.Context) {

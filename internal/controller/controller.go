@@ -49,18 +49,27 @@ func InitNode(c types.Config) error {
 }
 
 // Init node to sync from others on the network
-func InitEmptyNode(workDir string) error {
-	if err := os.MkdirAll(workDir, 0700); err != nil {
+func InitEmptyNode(cfg types.Config) error {
+	if err := os.MkdirAll(cfg.CRDTWorkdir, 0700); err != nil {
 		return fmt.Errorf("failed to create config dir: %w", err)
 	}
 
 	nodeID := uuid.New().String()
-	if err := os.WriteFile(filepath.Join(workDir, "node_id"), []byte(nodeID), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(cfg.CRDTWorkdir, "node_id"), []byte(nodeID), 0600); err != nil {
 		return fmt.Errorf("failed to write node_id: %w", err)
 	}
 
-	if err := os.WriteFile(filepath.Join(workDir, "crdt_state.json"), []byte("{}"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(cfg.CRDTWorkdir, "crdt_state.json"), []byte("{}"), 0600); err != nil {
 		return fmt.Errorf("failed to write crdt state: %w", err)
+	}
+
+	// create empty settings file so watcher can start
+	settingsDir := filepath.Dir(cfg.SettingsPath)
+	if err := os.MkdirAll(settingsDir, 0700); err != nil {
+		return fmt.Errorf("failed to create settings dir: %w", err)
+	}
+	if err := os.WriteFile(cfg.SettingsPath, []byte("{}"), 0600); err != nil {
+		return fmt.Errorf("failed to write settings file: %w", err)
 	}
 
 	log.Printf("empty node initialized with ID %s", nodeID)

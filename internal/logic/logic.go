@@ -3,12 +3,12 @@ package logic
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/gdr00/distributed-server-update/internal/types"
@@ -18,10 +18,18 @@ type Logic struct {
 	settingsPath string
 	mu           sync.RWMutex
 	writing      atomic.Bool
+	previous     types.Settings
 }
 
 func New(settingsPath string) *Logic {
-	return &Logic{settingsPath: settingsPath}
+	l := &Logic{
+		settingsPath: settingsPath,
+		previous:     make(types.Settings),
+	}
+	if settings, err := l.Read(); err == nil {
+		l.previous = settings
+	}
+	return l
 }
 
 // Read parses the settings file into a plain key-value map
@@ -50,23 +58,28 @@ func (l *Logic) Write(entry types.SettingEntry) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	settings, err := l.Read()
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("failed to read settings before write: %w", err)
+	// direct read to avoid lock order issues
+	data, _ := os.ReadFile(l.settingsPath)
+	settings := make(types.Settings)
+	if data != nil {
+		json.Unmarshal(data, &settings)
 	}
-	if settings == nil {
-		settings = make(types.Settings)
-	}
+
 	if entry.Deleted {
+		// if deleted remove the entry from cache and local read data
 		delete(settings, entry.Key)
+		delete(l.previous, entry.Key)
 	} else {
+		// if new add it to cache and settings to write
 		settings[entry.Key] = entry.Value
+		l.previous[entry.Key] = entry.Value
 	}
-	data, err := json.MarshalIndent(settings, "", "  ")
+
+	out, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal settings: %w", err)
 	}
-	return os.WriteFile(l.settingsPath, data, 0600)
+	return os.WriteFile(l.settingsPath, out, 0600)
 }
 
 func (l *Logic) Watch(ctx context.Context, onChange func(types.SettingEntry)) error {
@@ -80,6 +93,8 @@ func (l *Logic) Watch(ctx context.Context, onChange func(types.SettingEntry)) er
 		return fmt.Errorf("failed to watch file: %w", err)
 	}
 
+	var debounce *time.Timer
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -92,14 +107,12 @@ func (l *Logic) Watch(ctx context.Context, onChange func(types.SettingEntry)) er
 				if l.writing.Load() {
 					continue // we were writing
 				}
-				entries, err := l.Read()
-				if err != nil {
-					log.Printf("failed to read settings: %v", err)
-					continue
+				if debounce != nil {
+					debounce.Stop()
 				}
-				for k, v := range entries {
-					onChange(types.SettingEntry{Key: k, Value: v})
-				}
+				debounce = time.AfterFunc(100*time.Millisecond, func() {
+					l.applyChanges(onChange)
+				})
 			}
 		case err, ok := <-watcher.Errors:
 			if !ok {
@@ -108,4 +121,27 @@ func (l *Logic) Watch(ctx context.Context, onChange func(types.SettingEntry)) er
 			log.Printf("watcher error: %v", err)
 		}
 	}
+}
+
+func (l *Logic) applyChanges(onChange func(types.SettingEntry)) {
+	entries, err := l.Read()
+	if err != nil {
+		log.Printf("failed to read settings: %v", err)
+		return
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	for k := range l.previous {
+		if _, exists := entries[k]; !exists {
+			onChange(types.SettingEntry{Key: k, Deleted: true})
+		}
+	}
+	for k, v := range entries {
+		if l.previous[k] != v {
+			onChange(types.SettingEntry{Key: k, Value: v})
+		}
+	}
+	l.previous = entries
 }
