@@ -3,6 +3,7 @@ package types
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"time"
 )
@@ -23,7 +24,16 @@ func (a HLC) Before(b HLC) bool {
 	return a.NodeID < b.NodeID
 }
 
+// Update local HLC with a recived HLC
+//
+// prevents partially bad actors/missconfigured nodes with sys clock in the future discarding updates with delta T > 1min
 func (h *HLC) Update(received HLC) {
+
+	if received.WallTime-time.Now().UnixNano() > int64(time.Minute) {
+		log.Printf("rejecting clock too far in future: %v", received)
+		return
+	}
+
 	wall := max(h.WallTime, received.WallTime)
 
 	if h.WallTime == received.WallTime {
@@ -39,6 +49,9 @@ func (h *HLC) Update(received HLC) {
 	}
 }
 
+// Advance HLC
+//
+// If NTP steps sys clock backward might overflow Logical (maxUint32 events in the same instant), unlikely
 func (h *HLC) Tick() {
 	now := time.Now().UnixNano()
 	if now > h.WallTime {
