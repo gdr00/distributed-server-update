@@ -95,9 +95,14 @@ func (ctrl *Controller) Run(ctx context.Context) error {
 
 	// crdt → logic (write file on remote change)
 	go func() {
-		for entry := range ctrl.crdt.FileSync() {
-			if err := ctrl.logic.Write(entry); err != nil {
-				log.Printf("failed to write settings: %v", err)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case entry := <-ctrl.crdt.FileSync():
+				if err := ctrl.logic.Write(entry); err != nil {
+					log.Printf("failed to write settings: %v", err)
+				}
 			}
 		}
 	}()
@@ -113,10 +118,15 @@ func (ctrl *Controller) Run(ctx context.Context) error {
 
 	// crdt → network (broadcast to peers)
 	go func() {
-		for entry := range ctrl.crdt.Updates() {
-			ctrl.network.Broadcast(&userpb.ServerStateUpdate{
-				Entry: network.ToProto(entry),
-			})
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case entry := <-ctrl.crdt.Updates():
+				ctrl.network.Broadcast(&userpb.ServerStateUpdate{
+					Entry: network.ToProto(entry),
+				})
+			}
 		}
 	}()
 

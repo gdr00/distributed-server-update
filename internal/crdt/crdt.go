@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gdr00/distributed-server-update/internal/types"
 	"github.com/google/uuid"
@@ -149,6 +150,11 @@ func (c *CRDT) Run(ctx context.Context) {
 			}
 		// I have incoming changes from one of the peers I am subscribed to
 		case entry := <-c.remoteCh:
+			// Drop entries from the future to prevent permanent lockout
+			if entry.Clock.WallTime > time.Now().UnixNano()+int64(time.Minute) {
+				log.Printf("warning: dropped remote update for '%s' (future clock)", entry.Key)
+				continue
+			}
 			c.clock.Update(entry.Clock)
 			if c.merge(entry) {
 				c.saveState()

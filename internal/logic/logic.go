@@ -125,24 +125,38 @@ func (l *Logic) Watch(ctx context.Context, onChange func(types.SettingEntry)) er
 }
 
 func (l *Logic) applyChanges(onChange func(types.SettingEntry)) {
-	entries, err := l.Read()
+	l.mu.Lock()
+
+	data, err := os.ReadFile(l.settingsPath)
 	if err != nil {
-		log.Printf("failed to read settings: %v", err)
+		l.mu.Unlock()
+		log.Printf("failed to read settings file: %v", err)
 		return
 	}
 
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	entries := make(types.Settings)
+	if err := json.Unmarshal(data, &entries); err != nil {
+		l.mu.Unlock()
+		log.Printf("failed to parse settings file: %v", err)
+		return
+	}
+
+	var changes []types.SettingEntry
 
 	for k := range l.previous {
 		if _, exists := entries[k]; !exists {
-			onChange(types.SettingEntry{Key: k, Deleted: true})
+			changes = append(changes, types.SettingEntry{Key: k, Deleted: true})
 		}
 	}
 	for k, v := range entries {
 		if l.previous[k] != v {
-			onChange(types.SettingEntry{Key: k, Value: v})
+			changes = append(changes, types.SettingEntry{Key: k, Value: v})
 		}
 	}
 	l.previous = entries
+	l.mu.Unlock()
+
+	for _, change := range changes {
+		onChange(change)
+	}
 }

@@ -225,7 +225,7 @@ func TestRun_RemoteUpdateWritesToFile(t *testing.T) {
 		Key:   "theme",
 		Value: "light",
 		Clock: types.HLC{
-			WallTime: time.Now().UnixNano() + int64(time.Hour), // guaranteed future
+			WallTime: time.Now().UnixNano() + int64(time.Second), // guaranteed newer, within 1 min limit
 			NodeID:   "remote-node",
 		},
 	})
