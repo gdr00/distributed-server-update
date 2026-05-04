@@ -1,0 +1,6 @@
+{
+  "peerAddresses": ["node1:9000", "node3:9000"],
+  "settingsPath": "/data/settings.json",
+  "crdtWorkdir": "/data/crdt",
+  "grpcPort": 9000
+}
