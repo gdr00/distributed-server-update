@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -17,7 +16,6 @@ import (
 type Logic struct {
 	settingsPath string
 	mu           sync.RWMutex
-	writing      atomic.Bool
 	previous     types.Settings
 }
 
@@ -52,9 +50,6 @@ func (l *Logic) Read() (types.Settings, error) {
 
 // Write entries to file
 func (l *Logic) Write(entry types.SettingEntry) error {
-	l.writing.Store(true)
-	defer l.writing.Store(false)
-
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -104,9 +99,6 @@ func (l *Logic) Watch(ctx context.Context, onChange func(types.SettingEntry)) er
 				return nil
 			}
 			if event.Has(fsnotify.Write) {
-				if l.writing.Load() {
-					continue // we were writing
-				}
 				if debounce != nil {
 					debounce.Stop()
 				}
