@@ -82,28 +82,31 @@ func (ctrl *Controller) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to start RPC server: %w", err)
 	}
 
+	// crdt → logic (write file on remote change)
+	ctrl.crdt.OnFileSync = func(entry types.SettingEntry) {
+		// inside gorutine to avoid locking crdt Run loop on disk write
+		go func() {
+			if err := ctrl.logic.Write(entry); err != nil {
+				log.Printf("failed to write settings: %v", err)
+			}
+		}()
+	}
+
+	// crdt → network (broadcast to peers)
+	ctrl.crdt.OnBroadcast = func(entry types.SettingEntry) {
+		ctrl.network.Broadcast(&userpb.ServerStateUpdate{
+			Entry: network.ToProto(entry),
+		})
+	}
+
 	go ctrl.crdt.Run(ctx)
 
-	// logic → crdt
+	// logic → crdt (local file changes)
 	go func() {
 		if err := ctrl.logic.Watch(ctx, func(entry types.SettingEntry) {
 			ctrl.crdt.NotifyLocal(entry)
 		}); err != nil {
 			log.Printf("file watcher error: %v", err)
-		}
-	}()
-
-	// crdt → logic (write file on remote change)
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case entry := <-ctrl.crdt.FileSync():
-				if err := ctrl.logic.Write(entry); err != nil {
-					log.Printf("failed to write settings: %v", err)
-				}
-			}
 		}
 	}()
 
@@ -115,20 +118,6 @@ func (ctrl *Controller) Run(ctx context.Context) error {
 			ctrl.crdt.NotifyRemote(network.FromProto(update.Entry))
 		})
 	}
-
-	// crdt → network (broadcast to peers)
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case entry := <-ctrl.crdt.Updates():
-				ctrl.network.Broadcast(&userpb.ServerStateUpdate{
-					Entry: network.ToProto(entry),
-				})
-			}
-		}
-	}()
 
 	<-ctx.Done()
 	return nil

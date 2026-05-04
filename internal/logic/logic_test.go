@@ -187,8 +187,9 @@ func TestWatch_DetectsFileChange(t *testing.T) {
 	// give watcher time to start
 	time.Sleep(50 * time.Millisecond)
 
-	// write new settings to file
-	l.Write(types.SettingEntry{Key: "theme", Value: "light"})
+	// simulate external file edit
+	newData, _ := json.MarshalIndent(types.Settings{"theme": "light"}, "", "  ")
+	os.WriteFile(l.settingsPath, newData, 0600)
 
 	select {
 	case entry := <-received:

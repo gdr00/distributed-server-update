@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/gdr00/distributed-server-update/internal/types"
 	"github.com/google/uuid"
@@ -29,23 +28,21 @@ type CRDT struct {
 	dir         string                        // working directory where all CRTD data is stored
 	localCh     chan types.SettingEntry       // channel for local setting updates
 	remoteCh    chan types.SettingEntry       // channel for remote setting updates
-	broadcastCh chan types.SettingEntry       // send update to the subscribers
-	fileCh      chan types.SettingEntry       // send setting sync to local
 	queryCh     chan queryRequest             // channel to query for key value pairs in settings
 	snapshotCh  chan snapshotRequest          // channel to query for a full snapshot
+	OnBroadcast func(types.SettingEntry)      // injected callback for outgoing broadcasts
+	OnFileSync  func(types.SettingEntry)      // injected callback for file writes
 }
 
 func New(workDir string) *CRDT {
 	return &CRDT{
-		clock:       types.HLC{NodeID: loadNodeID(workDir)},
-		state:       make(map[string]types.SettingEntry),
-		dir:         workDir,
-		localCh:     make(chan types.SettingEntry, 10),
-		remoteCh:    make(chan types.SettingEntry, 10),
-		broadcastCh: make(chan types.SettingEntry, 10),
-		fileCh:      make(chan types.SettingEntry, 10),
-		queryCh:     make(chan queryRequest, 10),
-		snapshotCh:  make(chan snapshotRequest, 10),
+		clock:      types.HLC{NodeID: loadNodeID(workDir)},
+		state:      make(map[string]types.SettingEntry),
+		dir:        workDir,
+		localCh:    make(chan types.SettingEntry, 10),
+		remoteCh:   make(chan types.SettingEntry, 10),
+		queryCh:    make(chan queryRequest, 10),
+		snapshotCh: make(chan snapshotRequest, 10),
 	}
 }
 
@@ -96,16 +93,6 @@ func (c *CRDT) NotifyRemote(entry types.SettingEntry) {
 	c.remoteCh <- entry
 }
 
-// for network package — read updates to broadcast
-func (c *CRDT) Updates() <-chan types.SettingEntry {
-	return c.broadcastCh
-}
-
-// for logic package — read snapshots to write to file
-func (c *CRDT) FileSync() <-chan types.SettingEntry {
-	return c.fileCh
-}
-
 // for any package — query a single key
 func (c *CRDT) Get(key string) types.SettingEntry {
 	req := queryRequest{key: key, resp: make(chan types.SettingEntry, 1)}
@@ -146,19 +133,22 @@ func (c *CRDT) Run(ctx context.Context) {
 			entry.Clock = c.clock // update entry clock to the current system's
 			if c.merge(entry) {
 				c.saveState()
-				c.broadcastCh <- entry
+				if c.OnBroadcast != nil {
+					c.OnBroadcast(entry)
+				}
 			}
 		// I have incoming changes from one of the peers I am subscribed to
 		case entry := <-c.remoteCh:
 			// Drop entries from the future to prevent permanent lockout
-			if entry.Clock.WallTime > time.Now().UnixNano()+int64(time.Minute) {
-				log.Printf("warning: dropped remote update for '%s' (future clock)", entry.Key)
+			if err := c.clock.Update(entry.Clock); err != nil {
+				log.Printf("dropping remote update: %v", err)
 				continue
 			}
-			c.clock.Update(entry.Clock)
 			if c.merge(entry) {
 				c.saveState()
-				c.fileCh <- entry
+				if c.OnFileSync != nil {
+					c.OnFileSync(entry)
+				}
 			}
 		// I recive a query about current state of an entry
 		case req := <-c.queryCh:

@@ -123,12 +123,15 @@ func TestRun_LocalUpdateBroadcast(t *testing.T) {
 	c, _ := setupCRDT(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	updates := make(chan types.SettingEntry, 1)
+	c.OnBroadcast = func(e types.SettingEntry) { updates <- e }
 	go c.Run(ctx)
 
 	c.NotifyLocal(types.SettingEntry{Key: "theme", Value: "dark"})
 
 	select {
-	case broadcast := <-c.Updates():
+	case broadcast := <-updates:
 		if broadcast.Key != "theme" || broadcast.Value != "dark" {
 			t.Fatalf("unexpected broadcast: %+v", broadcast)
 		}
@@ -141,12 +144,15 @@ func TestRun_RemoteUpdateWritesToFile(t *testing.T) {
 	c, _ := setupCRDT(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	fileSync := make(chan types.SettingEntry, 1)
+	c.OnFileSync = func(e types.SettingEntry) { fileSync <- e }
 	go c.Run(ctx)
 
 	c.NotifyRemote(entry("theme", "dark", hlc(100, 0, "remote-node")))
 
 	select {
-	case fileEntry := <-c.FileSync():
+	case fileEntry := <-fileSync:
 		if fileEntry.Key != "theme" || fileEntry.Value != "dark" {
 			t.Fatalf("unexpected file entry: %+v", fileEntry)
 		}
@@ -159,17 +165,22 @@ func TestRun_RemoteOlderThanLocalNotWrittenToFile(t *testing.T) {
 	c, _ := setupCRDT(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	updates := make(chan types.SettingEntry, 1)
+	c.OnBroadcast = func(e types.SettingEntry) { updates <- e }
+	fileSync := make(chan types.SettingEntry, 1)
+	c.OnFileSync = func(e types.SettingEntry) { fileSync <- e }
 	go c.Run(ctx)
 
 	// push a newer local entry first
 	c.NotifyLocal(entry("theme", "dark", hlc(200, 0, "test-node")))
-	<-c.Updates() // drain broadcast
+	<-updates // drain broadcast
 
 	// push older remote
 	c.NotifyRemote(entry("theme", "light", hlc(100, 0, "remote-node")))
 
 	select {
-	case e := <-c.FileSync():
+	case e := <-fileSync:
 		t.Fatalf("expected no file sync for stale remote, got: %+v", e)
 	case <-time.After(100 * time.Millisecond):
 		// correct — nothing written
@@ -180,10 +191,12 @@ func TestRun_Get(t *testing.T) {
 	c, _ := setupCRDT(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	sync := make(chan struct{})
+	c.OnBroadcast = func(types.SettingEntry) { close(sync) }
 	go c.Run(ctx)
 
 	c.NotifyLocal(types.SettingEntry{Key: "theme", Value: "dark"})
-	<-c.Updates() // wait for processing
+	<-sync // wait for processing
 
 	result := c.Get("theme")
 	if result.Value != "dark" {
@@ -209,10 +222,12 @@ func TestRun_LocalEntryGetsClockStamped(t *testing.T) {
 	c, _ := setupCRDT(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	updates := make(chan types.SettingEntry, 1)
+	c.OnBroadcast = func(e types.SettingEntry) { updates <- e }
 	go c.Run(ctx)
 
 	c.NotifyLocal(types.SettingEntry{Key: "theme", Value: "dark"}) // no clock set
-	broadcast := <-c.Updates()
+	broadcast := <-updates
 
 	if broadcast.Clock.WallTime == 0 {
 		t.Fatal("expected clock to be stamped on local entry")
@@ -226,13 +241,15 @@ func TestRun_ClockMonotonicallyIncreases(t *testing.T) {
 	c, _ := setupCRDT(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	updates := make(chan types.SettingEntry, 2)
+	c.OnBroadcast = func(e types.SettingEntry) { updates <- e }
 	go c.Run(ctx)
 
 	c.NotifyLocal(types.SettingEntry{Key: "a", Value: "1"})
-	first := <-c.Updates()
+	first := <-updates
 
 	c.NotifyLocal(types.SettingEntry{Key: "b", Value: "2"})
-	second := <-c.Updates()
+	second := <-updates
 
 	if !first.Clock.Before(second.Clock) {
 		t.Fatalf("expected second clock to be after first: %+v >= %+v", first.Clock, second.Clock)
@@ -245,10 +262,12 @@ func TestSnapshot_IsCopy(t *testing.T) {
 	c, _ := setupCRDT(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	sync := make(chan struct{})
+	c.OnBroadcast = func(types.SettingEntry) { close(sync) }
 	go c.Run(ctx)
 
 	c.NotifyLocal(types.SettingEntry{Key: "theme", Value: "dark"})
-	<-c.Updates()
+	<-sync
 
 	snap := c.Snapshot()
 	snap.Entries["theme"] = types.SettingEntry{Value: "mutated"} // mutate snapshot

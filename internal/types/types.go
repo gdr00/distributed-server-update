@@ -3,7 +3,6 @@ package types
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"time"
 )
@@ -27,11 +26,11 @@ func (a HLC) Before(b HLC) bool {
 // Update local HLC with a recived HLC
 //
 // prevents partially bad actors/missconfigured nodes with sys clock in the future discarding updates with delta T > 1min
-func (h *HLC) Update(received HLC) {
+func (h *HLC) Update(received HLC) error {
 
 	if received.WallTime-time.Now().UnixNano() > int64(time.Minute) {
-		log.Printf("rejecting clock too far in future: %v", received)
-		return
+
+		return fmt.Errorf("rejecting clock too far in future: %v", received)
 	}
 
 	wall := max(h.WallTime, received.WallTime)
@@ -47,6 +46,7 @@ func (h *HLC) Update(received HLC) {
 		h.WallTime = wall
 		h.Logical = received.Logical + 1
 	}
+	return nil
 }
 
 // Advance HLC
