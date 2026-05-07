@@ -33,18 +33,22 @@ func (h *HLC) Update(received HLC) error {
 		return fmt.Errorf("rejecting clock too far in future: %v", received)
 	}
 
-	wall := max(h.WallTime, received.WallTime)
+	now := time.Now().UnixNano()
+	wall := max(h.WallTime, received.WallTime, now)
 
-	if h.WallTime == received.WallTime {
-		// Case equal clocks -> increment logical to max +1
+	if wall == h.WallTime && wall == received.WallTime {
+		// local and remote are equal, phy might be lower
 		h.Logical = max(h.Logical, received.Logical) + 1
+	} else if wall == received.WallTime {
+		// received is ahead
+		h.Logical = received.Logical + 1
 	} else if wall == h.WallTime {
-		// Case local clock is greater -> increment LL (local logical)
+		// local is ahead
 		h.Logical++
 	} else {
-		// Case remote clock is greater -> set local clock to remote and increment logical
+		// phy ahead of both
 		h.WallTime = wall
-		h.Logical = received.Logical + 1
+		h.Logical = 0
 	}
 	return nil
 }
