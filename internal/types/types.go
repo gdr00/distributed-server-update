@@ -7,9 +7,11 @@ import (
 	"time"
 )
 
+type LogicalClock uint32
+
 type HLC struct {
 	WallTime int64
-	Logical  uint32
+	Logical  LogicalClock
 	NodeID   string
 }
 
@@ -28,29 +30,42 @@ func (a HLC) Before(b HLC) bool {
 // prevents partially bad actors/missconfigured nodes with sys clock in the future discarding updates with delta T > 1min
 func (h *HLC) Update(received HLC) error {
 
-	if received.WallTime-time.Now().UnixNano() > int64(time.Minute) {
+	now := time.Now().UnixNano()
+
+	if received.WallTime-now > int64(time.Minute) {
 
 		return fmt.Errorf("rejecting clock too far in future: %v", received)
 	}
 
-	now := time.Now().UnixNano()
 	wall := max(h.WallTime, received.WallTime, now)
 
 	if wall == h.WallTime && wall == received.WallTime {
 		// local and remote are equal, phy might be lower
-		h.Logical = max(h.Logical, received.Logical) + 1
+		h.advanceLogical(max(h.Logical, received.Logical))
 	} else if wall == received.WallTime {
 		// received is ahead
-		h.Logical = received.Logical + 1
+		h.advanceLogical(received.Logical)
 	} else if wall == h.WallTime {
 		// local is ahead
-		h.Logical++
+		h.advanceLogical(h.Logical)
 	} else {
 		// phy ahead of both
 		h.WallTime = wall
 		h.Logical = 0
 	}
 	return nil
+}
+
+// Logical counter update
+//
+// Handle overflow of the logical counter
+func (h *HLC) advanceLogical(base LogicalClock) {
+	if base == ^LogicalClock(0) {
+		h.WallTime++
+		h.Logical = 0
+		return
+	}
+	h.Logical = base + 1
 }
 
 // Advance HLC
@@ -62,7 +77,7 @@ func (h *HLC) Tick() {
 		h.WallTime = now
 		h.Logical = 0
 	} else {
-		h.Logical++
+		h.advanceLogical(h.Logical)
 	}
 }
 
