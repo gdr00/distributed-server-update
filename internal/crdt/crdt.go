@@ -36,7 +36,7 @@ type CRDT struct {
 
 func New(workDir string) *CRDT {
 	return &CRDT{
-		clock:      types.HLC{NodeID: loadNodeID(workDir)},
+		clock:      *types.NewHLC(loadNodeID(workDir)),
 		state:      make(map[string]types.SettingEntry),
 		dir:        workDir,
 		localCh:    make(chan types.SettingEntry, 10),

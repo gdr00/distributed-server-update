@@ -256,3 +256,135 @@ func TestRun_InvalidRPCPortReturnsError(t *testing.T) {
 		t.Fatal("expected error for privileged port")
 	}
 }
+
+func TestInitNode_CRDTInitError(t *testing.T) {
+	dir := t.TempDir()
+	// place a file where the crdt subdir needs to be, blocking MkdirAll
+	blocker := filepath.Join(dir, "crdt")
+	if err := os.WriteFile(blocker, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	settingsDir := t.TempDir()
+	settingsPath := filepath.Join(settingsDir, "settings.json")
+	data, _ := json.MarshalIndent(types.Settings{"k": "v"}, "", "  ")
+	os.WriteFile(settingsPath, data, 0600)
+
+	cfg := types.Config{SettingsPath: settingsPath, CRDTWorkdir: filepath.Join(blocker, "sub")}
+	if err := InitNode(cfg); err == nil {
+		t.Fatal("expected error when crdt dir cannot be created")
+	}
+}
+
+func TestInitEmptyNode_WorkDirNotCreatable(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	os.WriteFile(blocker, []byte("x"), 0600)
+
+	cfg := types.Config{
+		CRDTWorkdir:  filepath.Join(blocker, "sub"),
+		SettingsPath: filepath.Join(t.TempDir(), "settings.json"),
+	}
+	if err := InitEmptyNode(cfg); err == nil {
+		t.Fatal("expected error when workdir cannot be created")
+	}
+}
+
+func TestInitEmptyNode_WriteNodeIDError(t *testing.T) {
+	dir := t.TempDir()
+	os.Chmod(dir, 0500)
+	defer os.Chmod(dir, 0700)
+
+	cfg := types.Config{
+		CRDTWorkdir:  dir,
+		SettingsPath: filepath.Join(t.TempDir(), "settings.json"),
+	}
+	if err := InitEmptyNode(cfg); err == nil {
+		t.Fatal("expected error when node_id cannot be written")
+	}
+}
+
+func TestInitEmptyNode_SettingsWriteError(t *testing.T) {
+	dir := t.TempDir()
+	settingsDir := t.TempDir()
+	os.Chmod(settingsDir, 0500)
+	defer os.Chmod(settingsDir, 0700)
+
+	cfg := types.Config{
+		CRDTWorkdir:  dir,
+		SettingsPath: filepath.Join(settingsDir, "settings.json"),
+	}
+	if err := InitEmptyNode(cfg); err == nil {
+		t.Fatal("expected error writing settings file")
+	}
+}
+
+func TestInitEmptyNode_SettingsDirError(t *testing.T) {
+	dir := t.TempDir()
+	settingsBase := t.TempDir()
+	blocker := filepath.Join(settingsBase, "blocker")
+	os.WriteFile(blocker, []byte("x"), 0600)
+
+	cfg := types.Config{
+		CRDTWorkdir:  dir,
+		SettingsPath: filepath.Join(blocker, "settings.json"),
+	}
+	if err := InitEmptyNode(cfg); err == nil {
+		t.Fatal("expected error when settings dir cannot be created")
+	}
+}
+
+func TestRun_WithPeerAddress(t *testing.T) {
+	workDir, settingsPath := setupWorkDir(t, types.Settings{})
+	cfg := types.Config{
+		CRDTWorkdir:   workDir,
+		SettingsPath:  settingsPath,
+		GRPCPort:      0,
+		PeerAddresses: []string{"localhost:19999"}, // lazy dial — no server needed
+	}
+	ctrl := New(cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() { done <- ctrl.Run(ctx) }()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not stop after context cancel")
+	}
+}
+
+func TestRun_OnFileSyncWriteError(t *testing.T) {
+	workDir, settingsPath := setupWorkDir(t, types.Settings{"theme": "dark"})
+	ctrl := newTestController(t, workDir, settingsPath, 0, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go ctrl.Run(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	// make settings file unwritable so OnFileSync's Write call fails
+	os.Chmod(settingsPath, 0400)
+	defer os.Chmod(settingsPath, 0600)
+
+	ctrl.crdt.NotifyRemote(types.SettingEntry{
+		Key:   "theme",
+		Value: "light",
+		Clock: types.HLC{
+			WallTime: time.Now().UnixNano() + int64(time.Second),
+			NodeID:   "remote-node",
+		},
+	})
+
+	time.Sleep(300 * time.Millisecond)
+	if ctx.Err() != nil {
+		t.Fatal("controller exited unexpectedly")
+	}
+}

@@ -65,6 +65,39 @@ func entry(key, value string, h types.HLC) types.SettingEntry {
 	return types.SettingEntry{Key: key, Value: value, Clock: h}
 }
 
+func startTestServerWithLis(t *testing.T, snapshot func() types.Snapshot) (*UpdateServer, *bufconn.Listener) {
+	t.Helper()
+	if snapshot == nil {
+		snapshot = func() types.Snapshot {
+			return types.Snapshot{Entries: map[string]types.SettingEntry{}}
+		}
+	}
+	lis := bufconn.Listen(bufSize)
+	srv := NewUpdateServer(snapshot)
+	grpcSrv := grpc.NewServer()
+	userpb.RegisterUpdateServiceServer(grpcSrv, srv)
+	go grpcSrv.Serve(lis)
+	t.Cleanup(func() {
+		grpcSrv.Stop()
+		lis.Close()
+	})
+	return srv, lis
+}
+
+func newBufconnClient(t *testing.T, lis *bufconn.Listener) *Client {
+	t.Helper()
+	conn, err := grpc.NewClient("passthrough://bufnet",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return lis.DialContext(ctx)
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("failed to create bufconn client: %v", err)
+	}
+	return &Client{conn: conn, client: userpb.NewUpdateServiceClient(conn)}
+}
+
 // ── ToProto / FromProto ───────────────────────────────────────────────────────
 
 func TestToProto_RoundTrip(t *testing.T) {
@@ -295,6 +328,114 @@ func TestSync_EmptyLocalStateGetsEverything(t *testing.T) {
 	}
 	if len(resp.NewerEntries) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(resp.NewerEntries))
+	}
+}
+
+// ── StartRPCServer ────────────────────────────────────────────────────────────
+
+// ── Client ───────────────────────────────────────────────────────────────────
+
+func TestNewClient_LazyDial(t *testing.T) {
+	c, err := NewClient("localhost:19999")
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestNewClients_Empty(t *testing.T) {
+	clients := NewClients(nil)
+	if len(clients) != 0 {
+		t.Fatalf("expected 0 clients, got %d", len(clients))
+	}
+}
+
+func TestNewClients_WithAddress(t *testing.T) {
+	clients := NewClients([]string{"localhost:19999"})
+	if len(clients) != 1 {
+		t.Fatalf("expected 1 client, got %d", len(clients))
+	}
+	clients[0].Close()
+}
+
+func TestClient_Sync(t *testing.T) {
+	serverState := types.Snapshot{
+		Entries: map[string]types.SettingEntry{
+			"theme": entry("theme", "dark", hlc(200, 0, "server")),
+		},
+	}
+	_, lis := startTestServerWithLis(t, func() types.Snapshot { return serverState })
+	c := newBufconnClient(t, lis)
+	defer c.Close()
+
+	var received []types.SettingEntry
+	if err := c.sync(context.Background(), nil, func(u *userpb.ServerStateUpdate) {
+		received = append(received, FromProto(u.Entry))
+	}); err != nil {
+		t.Fatalf("sync() error = %v", err)
+	}
+	if len(received) != 1 || received[0].Value != "dark" {
+		t.Fatalf("unexpected sync result: %+v", received)
+	}
+}
+
+func TestClient_Sync_Error(t *testing.T) {
+	_, lis := startTestServerWithLis(t, nil)
+	c := newBufconnClient(t, lis)
+	defer c.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := c.sync(ctx, nil, func(*userpb.ServerStateUpdate) {})
+	if err == nil {
+		t.Fatal("expected error with cancelled context")
+	}
+}
+
+func TestClient_RunStream(t *testing.T) {
+	_, lis := startTestServerWithLis(t, nil)
+	c := newBufconnClient(t, lis)
+	defer c.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	c.runStream(ctx, nil, func(*userpb.ServerStateUpdate) {})
+}
+
+func TestClient_RunStream_SyncError(t *testing.T) {
+	_, lis := startTestServerWithLis(t, nil)
+	c := newBufconnClient(t, lis)
+	defer c.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	c.runStream(ctx, nil, func(*userpb.ServerStateUpdate) {})
+}
+
+func TestClient_Subscribe(t *testing.T) {
+	_, lis := startTestServerWithLis(t, nil)
+	c := newBufconnClient(t, lis)
+	defer c.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		c.Subscribe(ctx, func() []*userpb.SettingEntry { return nil }, func(*userpb.ServerStateUpdate) {})
+		close(done)
+	}()
+
+	<-ctx.Done()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Subscribe did not stop after context cancel")
 	}
 }
 

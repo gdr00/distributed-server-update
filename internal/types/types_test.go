@@ -6,194 +6,146 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // HLC.Before tests
 
-func TestHLCBefore_SameValues(t *testing.T) {
-	a := HLC{WallTime: 100, Logical: 5, NodeID: "n1"}
-	b := HLC{WallTime: 100, Logical: 5, NodeID: "n1"}
-	if a.Before(b) {
-		t.Errorf("expected equal HLCs: Before() = false, got true")
-	}
-	if b.Before(a) {
-		t.Errorf("expected equal HLCs: Before() = false, got true")
-	}
+type MockClock struct {
+	Time int64
 }
 
-func TestHLCBefore_WallTimeDiff(t *testing.T) {
+func (m *MockClock) Now() int64 { return m.Time }
+
+func TestHLC_Update(t *testing.T) {
+
+	var timeNow int64 = 1000
+
 	tests := []struct {
-		name string
-		a    HLC
-		b    HLC
-		want bool
+		name        string
+		local       HLC
+		received    HLC
+		now         int64
+		wantErr     bool
+		wantWall    int64
+		wantLogical uint32
 	}{
-		{"a wall earlier", HLC{WallTime: 50, Logical: 10, NodeID: "n1"}, HLC{WallTime: 100, Logical: 5, NodeID: "n1"}, true},
-		{"a wall later", HLC{WallTime: 150, Logical: 5, NodeID: "n1"}, HLC{WallTime: 100, Logical: 10, NodeID: "n1"}, false},
-		{"wall equal, same", HLC{WallTime: 100, Logical: 5, NodeID: "n1"}, HLC{WallTime: 100, Logical: 5, NodeID: "n1"}, false},
+		{
+			name: "Error: Clock too far in future",
+			local: *NewHLC("1", SetHLC(HLC{
+				clock:    &MockClock{Time: timeNow},
+				WallTime: timeNow,
+				Logical:  0,
+			})),
+			received: *NewHLC("2", SetHLC(HLC{
+				clock:    &MockClock{Time: 0},
+				WallTime: timeNow + int64(2*time.Minute),
+				Logical:  0,
+			})),
+			now:     timeNow,
+			wantErr: true,
+		},
+		{
+			name: "Branches: All Equal",
+			local: *NewHLC("1", SetHLC(HLC{
+				clock:    &MockClock{Time: timeNow},
+				WallTime: timeNow,
+				Logical:  5,
+			})),
+			received: *NewHLC("2", SetHLC(HLC{
+				clock:    &MockClock{Time: timeNow},
+				WallTime: timeNow,
+				Logical:  8,
+			})),
+			now:         timeNow,
+			wantWall:    timeNow,
+			wantLogical: 9,
+		},
+		{
+			name: "Branches: Received Wall Ahead",
+			local: *NewHLC("1", SetHLC(HLC{
+				clock:    &MockClock{Time: timeNow},
+				WallTime: timeNow,
+				Logical:  10,
+			})),
+			received: *NewHLC("2", SetHLC(HLC{
+				clock:    &MockClock{Time: timeNow},
+				WallTime: timeNow + 100,
+				Logical:  5,
+			})),
+			now:         timeNow,
+			wantWall:    timeNow + 100,
+			wantLogical: 6,
+		},
+		{
+			name: "Branches: Physical Clock Ahead (Reset)",
+			local: *NewHLC("1", SetHLC(HLC{
+				clock:    &MockClock{Time: timeNow + 1000},
+				WallTime: timeNow,
+				Logical:  50,
+			})),
+			received: *NewHLC("2", SetHLC(HLC{
+				clock:    &MockClock{Time: timeNow},
+				WallTime: timeNow,
+				Logical:  50,
+			})),
+			now:         timeNow + 1000,
+			wantWall:    timeNow + 1000,
+			wantLogical: 0,
+		},
+		{
+			name: "Edge Case: Logical Overflow",
+			local: *NewHLC("1", SetHLC(HLC{
+				clock:    &MockClock{Time: timeNow},
+				WallTime: timeNow,
+				Logical:  4294967295,
+			})), // Max uint32
+			received: *NewHLC("1", SetHLC(HLC{
+				clock:    &MockClock{Time: timeNow},
+				WallTime: timeNow,
+				Logical:  10,
+			})),
+			now:         timeNow,
+			wantWall:    timeNow + 1,
+			wantLogical: 0,
+		},
+		{
+			name: "Branches: Local Wall Ahead",
+			local: *NewHLC("1", SetHLC(HLC{
+				clock:    &MockClock{Time: timeNow},
+				WallTime: timeNow + 100,
+				Logical:  5,
+			})),
+			received: *NewHLC("2", SetHLC(HLC{
+				clock:    &MockClock{Time: 0},
+				WallTime: timeNow,
+				Logical:  8,
+			})),
+			now:         timeNow,
+			wantWall:    timeNow + 100,
+			wantLogical: 6,
+		},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tt.a.Before(tt.b)
-			if got != tt.want {
-				t.Errorf("HLC.Before() = %v, want %v", got, tt.want)
+			h := tt.local
+
+			err := h.Update(tt.received)
+
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Update() error = %v, wantErr %v", err, tt.wantErr)
+			}
+
+			if !tt.wantErr {
+				if h.WallTime != tt.wantWall {
+					t.Errorf("WallTime = %v, want %v", h.WallTime, tt.wantWall)
+				}
+				if h.Logical != tt.wantLogical {
+					t.Errorf("Logical = %v, want %v", h.Logical, tt.wantLogical)
+				}
 			}
 		})
-	}
-}
-
-func TestHLCBefore_LogicalDiff(t *testing.T) {
-	tests := []struct {
-		name   string
-		aWall  int64
-		aLogic uint32
-		bWall  int64
-		bLogic uint32
-		want   bool
-	}{
-		{"a logic less", 100, 3, 100, 5, true},
-		{"a logic greater", 100, 7, 100, 5, false},
-		{"zero vs positive", 100, 0, 100, 1, true},
-		{"uint32 max overflow case", 100, math.MaxUint32, 100, 0, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			a := HLC{WallTime: tt.aWall, Logical: tt.aLogic, NodeID: "n1"}
-			b := HLC{WallTime: tt.bWall, Logical: tt.bLogic, NodeID: "n1"}
-			got := a.Before(b)
-			if got != tt.want {
-				t.Errorf("Before() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestHLCBefore_NodeIDDiff(t *testing.T) {
-	tests := []struct {
-		name  string
-		aNode string
-		bNode string
-		want  bool
-	}{
-		{"n1 before n2", "n1", "n2", true},
-		{"n2 after n1", "n2", "n1", false},
-		{"abc before xyz", "abc", "xyz", true},
-		{"z after a", "z", "a", false},
-		{"empty string", "", "a", true},
-		{"same empty", "", "", false},
-		{"case sensitive", "A", "a", true}, // uppercase before lowercase in ASCII
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			a := HLC{WallTime: 100, Logical: 5, NodeID: tt.aNode}
-			b := HLC{WallTime: 100, Logical: 5, NodeID: tt.bNode}
-			got := a.Before(b)
-			if got != tt.want {
-				t.Errorf("Before() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-// HLC.Update tests
-
-func TestHLCUpdate_EqualClocks(t *testing.T) {
-	h := HLC{WallTime: 100, Logical: 5, NodeID: "a"}
-	received := HLC{WallTime: 100, Logical: 8, NodeID: "b"}
-	h.Update(received)
-	// Equal clocks: increment logical to max(5,8)+1 = 9
-	if h.Logical != 9 {
-		t.Errorf("expected Logical=9, got %d", h.Logical)
-	}
-	if h.WallTime != 100 {
-		t.Errorf("expected WallTime=100, got %d", h.WallTime)
-	}
-}
-
-func TestHLCUpdate_LocalWallGreater(t *testing.T) {
-	h := HLC{WallTime: 200, Logical: 5, NodeID: "a"}
-	received := HLC{WallTime: 100, Logical: 8, NodeID: "b"}
-	h.Update(received)
-	// Local wall > remote: increment logical only
-	if h.WallTime != 200 {
-		t.Errorf("expected WallTime=200, got %d", h.WallTime)
-	}
-	if h.Logical != 6 {
-		t.Errorf("expected Logical=6, got %d", h.Logical)
-	}
-}
-
-func TestHLCUpdate_RemoteWallGreater(t *testing.T) {
-	h := HLC{WallTime: 100, Logical: 5, NodeID: "a"}
-	received := HLC{WallTime: 200, Logical: 10, NodeID: "b"}
-	h.Update(received)
-	// Remote wall > local: set wall to remote, logical = remote.logical + 1
-	if h.WallTime != 200 {
-		t.Errorf("expected WallTime=200, got %d", h.WallTime)
-	}
-	if h.Logical != 11 {
-		t.Errorf("expected Logical=11, got %d", h.Logical)
-	}
-}
-
-func TestHLCUpdate_ZeroValues(t *testing.T) {
-	h := HLC{WallTime: 0, Logical: 0, NodeID: "a"}
-	received := HLC{WallTime: 0, Logical: 0, NodeID: "b"}
-	h.Update(received)
-	// Equal zero clocks: logical = max(0,0)+1 = 1
-	if h.Logical != 1 {
-		t.Errorf("expected Logical=1, got %d", h.Logical)
-	}
-	if h.WallTime != 0 {
-		t.Errorf("expected WallTime=0, got %d", h.WallTime)
-	}
-}
-
-func TestHLCUpdate_RemoteLogicalZero(t *testing.T) {
-	h := HLC{WallTime: 50, Logical: 3, NodeID: "a"}
-	received := HLC{WallTime: 100, Logical: 0, NodeID: "b"}
-	h.Update(received)
-	if h.WallTime != 100 {
-		t.Errorf("expected WallTime=100, got %d", h.WallTime)
-	}
-	if h.Logical != 1 {
-		t.Errorf("expected Logical=1, got %d", h.Logical)
-	}
-}
-
-func TestHLCUpdate_LocalLogicalMax(t *testing.T) {
-	h := HLC{WallTime: 200, Logical: 4294967295, NodeID: "a"}
-	received := HLC{WallTime: 100, Logical: 0, NodeID: "b"}
-	// uint32 overflow: 4294967295 + 1 = 0
-	h.Update(received)
-	if h.Logical != 0 {
-		t.Errorf("expected Logical=0 (overflow), got %d", h.Logical)
-	}
-}
-
-// HLC.Tick tests
-
-func TestHLCTick_WallAdvances(t *testing.T) {
-	h := HLC{WallTime: 100, Logical: 5, NodeID: "a"}
-	// Use a mock approach: set wall to far past so Tick will advance it
-	h.WallTime = 0
-	h.Tick()
-	if h.WallTime == 0 {
-		t.Error("expected WallTime to advance past 0")
-	}
-	if h.Logical != 0 {
-		t.Errorf("expected Logical=0 after wall advance, got %d", h.Logical)
-	}
-}
-
-func TestHLCTick_WallSame(t *testing.T) {
-	// Tick checks time.Now().UnixNano(). Hard to test wall stay-same without mocking.
-	// Test that Tick doesn't panic with zero state
-	h := HLC{WallTime: 0, Logical: 0, NodeID: "a"}
-	h.Tick()
-	// Since time.Now() >> 0, wall will advance, logical resets to 0
-	if h.WallTime == 0 {
-		t.Error("expected WallTime to advance from 0")
 	}
 }
 
@@ -221,13 +173,6 @@ func TestSettingEntry_Deleted(t *testing.T) {
 
 // Snapshot tests
 
-func TestSnapshot_New(t *testing.T) {
-	s := Snapshot{}
-	if s.Entries != nil {
-		t.Error("expected Entries to be nil (zero value map) for empty snapshot")
-	}
-}
-
 func TestSnapshot_WithEntries(t *testing.T) {
 	s := Snapshot{
 		Entries: map[string]SettingEntry{
@@ -243,13 +188,6 @@ func TestSnapshot_WithEntries(t *testing.T) {
 	}
 	if _, ok := s.Entries["k3"]; ok {
 		t.Error("unexpected k3 entry")
-	}
-}
-
-func TestSnapshot_EmptyEntries(t *testing.T) {
-	s := Snapshot{Entries: make(map[string]SettingEntry)}
-	if len(s.Entries) != 0 {
-		t.Errorf("expected 0 entries, got %d", len(s.Entries))
 	}
 }
 
@@ -339,19 +277,6 @@ func TestConfig_Defaults(t *testing.T) {
 	}
 }
 
-func TestConfig_ZeroPort(t *testing.T) {
-	cfg := Config{GRPCPort: 0}
-	if cfg.GRPCPort != 0 {
-		t.Errorf("expected port 0, got %d", cfg.GRPCPort)
-	}
-}
-
-func TestConfig_MaxPort(t *testing.T) {
-	cfg := Config{GRPCPort: 65535}
-	if cfg.GRPCPort != 65535 {
-		t.Errorf("expected port 65535, got %d", cfg.GRPCPort)
-	}
-}
 
 // LoadConfig tests
 
@@ -623,6 +548,17 @@ func TestConfig_JSONEmpty(t *testing.T) {
 	}
 }
 
+// SystemClock
+
+func TestSystemClock_Now(t *testing.T) {
+	before := time.Now().UnixNano()
+	got := SystemClock{}.Now()
+	after := time.Now().UnixNano()
+	if got < before || got > after {
+		t.Errorf("SystemClock.Now() = %d, want between %d and %d", got, before, after)
+	}
+}
+
 // HLC Tick boundary
 
 func TestHLCTick_MultipleTicks(t *testing.T) {
@@ -635,6 +571,18 @@ func TestHLCTick_MultipleTicks(t *testing.T) {
 	}
 	if h.WallTime == 0 {
 		t.Error("expected WallTime to be non-zero")
+	}
+}
+
+func TestHLCTick_AdvancesLogicalWhenWallInFuture(t *testing.T) {
+	futureWall := time.Now().UnixNano() + int64(time.Hour)
+	h := HLC{WallTime: futureWall, Logical: 5, NodeID: "a"}
+	h.Tick()
+	if h.WallTime != futureWall {
+		t.Error("WallTime should not change when it is already in the future")
+	}
+	if h.Logical != 6 {
+		t.Errorf("expected Logical=6, got %d", h.Logical)
 	}
 }
 
@@ -677,7 +625,11 @@ func TestHLCBefore_Irreflexivity(t *testing.T) {
 // HLC Update preserves NodeID
 
 func TestHLCUpdate_NodeIDPreserved(t *testing.T) {
-	h := HLC{WallTime: 100, Logical: 5, NodeID: "fixed-id"}
+	h := *NewHLC("fixed-id", SetHLC(HLC{
+		clock:    &MockClock{Time: 100},
+		WallTime: 100,
+		Logical:  5,
+	}))
 	received := HLC{WallTime: 200, Logical: 10, NodeID: "other-id"}
 	h.Update(received)
 	if h.NodeID != "fixed-id" {

@@ -2,7 +2,10 @@ package crdt
 
 import (
 	"context"
+	"encoding/json"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -257,6 +260,152 @@ func TestRun_ClockMonotonicallyIncreases(t *testing.T) {
 }
 
 // snapshot tests
+
+// Init tests
+
+func TestInit_CreatesNodeIDAndState(t *testing.T) {
+	dir := t.TempDir()
+	err := Init(types.Settings{"theme": "dark", "lang": "en"}, dir)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	nodeIDData, err := os.ReadFile(filepath.Join(dir, "node_id"))
+	if err != nil {
+		t.Fatal("expected node_id file")
+	}
+	if len(strings.TrimSpace(string(nodeIDData))) == 0 {
+		t.Fatal("expected non-empty node_id")
+	}
+	stateData, err := os.ReadFile(filepath.Join(dir, "crdt_state.json"))
+	if err != nil {
+		t.Fatal("expected crdt_state.json file")
+	}
+	var state map[string]types.SettingEntry
+	if err := json.Unmarshal(stateData, &state); err != nil {
+		t.Fatalf("expected valid state JSON: %v", err)
+	}
+	if state["theme"].Value != "dark" {
+		t.Errorf("expected dark, got %s", state["theme"].Value)
+	}
+	if state["lang"].Value != "en" {
+		t.Errorf("expected en, got %s", state["lang"].Value)
+	}
+}
+
+func TestInit_ClocksAreStamped(t *testing.T) {
+	dir := t.TempDir()
+	Init(types.Settings{"key": "val"}, dir)
+	stateData, _ := os.ReadFile(filepath.Join(dir, "crdt_state.json"))
+	var state map[string]types.SettingEntry
+	json.Unmarshal(stateData, &state)
+	if state["key"].Clock.WallTime == 0 {
+		t.Fatal("expected non-zero clock")
+	}
+	if state["key"].Clock.NodeID == "" {
+		t.Fatal("expected non-empty nodeID")
+	}
+}
+
+func TestInit_EmptySettings(t *testing.T) {
+	dir := t.TempDir()
+	if err := Init(types.Settings{}, dir); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	stateData, _ := os.ReadFile(filepath.Join(dir, "crdt_state.json"))
+	var state map[string]types.SettingEntry
+	json.Unmarshal(stateData, &state)
+	if len(state) != 0 {
+		t.Errorf("expected empty state, got %d entries", len(state))
+	}
+}
+
+func TestInit_CreatesNestedDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "nested", "dir")
+	if err := Init(types.Settings{}, dir); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+}
+
+func TestRun_RemoteFutureClockRejected(t *testing.T) {
+	c, _ := setupCRDT(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	fileSync := make(chan types.SettingEntry, 1)
+	c.OnFileSync = func(e types.SettingEntry) { fileSync <- e }
+	go c.Run(ctx)
+
+	futureWall := time.Now().UnixNano() + int64(2*time.Minute)
+	c.NotifyRemote(types.SettingEntry{
+		Key:   "theme",
+		Value: "dark",
+		Clock: types.HLC{WallTime: futureWall, NodeID: "remote"},
+	})
+
+	select {
+	case e := <-fileSync:
+		t.Fatalf("expected future clock to be rejected, got: %+v", e)
+	case <-time.After(100 * time.Millisecond):
+		// correct — rejected
+	}
+}
+
+func TestRun_SaveStateWriteFailureIsNonFatal(t *testing.T) {
+	c, dir := setupCRDT(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	updates := make(chan types.SettingEntry, 1)
+	c.OnBroadcast = func(e types.SettingEntry) { updates <- e }
+	go c.Run(ctx)
+
+	// make the state file read-only so WriteFile in saveState fails
+	statePath := filepath.Join(dir, "crdt_state.json")
+	os.Chmod(statePath, 0400)
+	defer os.Chmod(statePath, 0600)
+
+	c.NotifyLocal(types.SettingEntry{Key: "theme", Value: "dark"})
+
+	select {
+	case <-updates:
+		// broadcast fires even when save fails
+	case <-time.After(time.Second):
+		t.Fatal("timeout — run should continue despite save failure")
+	}
+}
+
+func TestInit_MkdirError(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	os.WriteFile(blocker, []byte("x"), 0600)
+	err := Init(types.Settings{}, filepath.Join(blocker, "sub"))
+	if err == nil {
+		t.Fatal("expected error when workdir cannot be created")
+	}
+}
+
+func TestInit_WriteNodeIDError(t *testing.T) {
+	dir := t.TempDir()
+	os.Chmod(dir, 0500)
+	defer os.Chmod(dir, 0700)
+	err := Init(types.Settings{}, dir)
+	if err == nil {
+		t.Fatal("expected error when node_id cannot be written")
+	}
+}
+
+func TestInit_WriteStateError(t *testing.T) {
+	dir := t.TempDir()
+	// pre-create read-only crdt_state.json so overwrite fails
+	statePath := filepath.Join(dir, "crdt_state.json")
+	os.WriteFile(statePath, []byte("{}"), 0400)
+	defer os.Chmod(statePath, 0600)
+
+	err := Init(types.Settings{"k": "v"}, dir)
+	if err == nil {
+		t.Fatal("expected error when crdt state cannot be written")
+	}
+}
 
 func TestSnapshot_IsCopy(t *testing.T) {
 	c, _ := setupCRDT(t)

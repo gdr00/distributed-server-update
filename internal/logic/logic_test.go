@@ -222,3 +222,36 @@ func TestWatch_StopsOnContextCancel(t *testing.T) {
 		t.Fatal("Watch did not stop after context cancel")
 	}
 }
+
+// applyChanges error path tests
+
+func TestApplyChanges_ReadError(t *testing.T) {
+	l := setupLogic(t, types.Settings{"key": "val"})
+	os.Remove(l.settingsPath)
+	called := false
+	l.applyChanges(func(types.SettingEntry) { called = true })
+	if called {
+		t.Error("onChange should not be called on read error")
+	}
+}
+
+func TestApplyChanges_InvalidJSON(t *testing.T) {
+	l := setupLogic(t, types.Settings{})
+	os.WriteFile(l.settingsPath, []byte("{invalid json"), 0600)
+	called := false
+	l.applyChanges(func(types.SettingEntry) { called = true })
+	if called {
+		t.Error("onChange should not be called on parse error")
+	}
+}
+
+func TestApplyChanges_DeletionDetected(t *testing.T) {
+	l := setupLogic(t, types.Settings{"key": "val"})
+	// rewrite file without "key" to simulate external deletion
+	os.WriteFile(l.settingsPath, []byte("{}"), 0600)
+	var changes []types.SettingEntry
+	l.applyChanges(func(e types.SettingEntry) { changes = append(changes, e) })
+	if len(changes) != 1 || !changes[0].Deleted || changes[0].Key != "key" {
+		t.Fatalf("expected deletion change for 'key', got %+v", changes)
+	}
+}
