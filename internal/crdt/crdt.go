@@ -146,10 +146,8 @@ func (c *CRDT) Run(ctx context.Context) {
 			}
 		// I have incoming changes from one of the peers I am subscribed to
 		case entry := <-c.remoteCh:
-			// Drop entries from the future to prevent permanent lockout
 			if err := c.clock.Update(entry.Clock); err != nil {
-				log.Printf("dropping remote update: %v", err)
-				continue
+				log.Printf("remote clock anomaly (entry still accepted): %v", err)
 			}
 			if c.merge(entry) {
 				c.saveState()
@@ -193,14 +191,40 @@ func (c *CRDT) loadState() error {
 
 // Save the current state
 func (c *CRDT) saveState() {
-	path := filepath.Join(c.dir, "crdt_state.json")
-
 	data, err := json.Marshal(c.state)
 	if err != nil {
 		log.Printf("failed to marshal crdt state: %v", err)
 		return
 	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	if err := atomicWriteFile(filepath.Join(c.dir, "crdt_state.json"), data); err != nil {
 		log.Printf("failed to save crdt state: %v", err)
 	}
+}
+
+func atomicWriteFile(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp_*")
+	if err != nil {
+		return err
+	}
+	ok := false
+	defer func() {
+		tmp.Close()
+		if !ok {
+			os.Remove(tmp.Name())
+		}
+	}()
+	if _, err = tmp.Write(data); err != nil {
+		return err
+	}
+	if err = tmp.Sync(); err != nil {
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(tmp.Name(), path); err != nil {
+		return err
+	}
+	ok = true
+	return nil
 }

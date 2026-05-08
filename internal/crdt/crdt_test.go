@@ -329,7 +329,7 @@ func TestInit_CreatesNestedDir(t *testing.T) {
 	}
 }
 
-func TestRun_RemoteFutureClockRejected(t *testing.T) {
+func TestRun_RemoteFutureClockAccepted(t *testing.T) {
 	c, _ := setupCRDT(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -347,9 +347,11 @@ func TestRun_RemoteFutureClockRejected(t *testing.T) {
 
 	select {
 	case e := <-fileSync:
-		t.Fatalf("expected future clock to be rejected, got: %+v", e)
-	case <-time.After(100 * time.Millisecond):
-		// correct — rejected
+		if e.Key != "theme" || e.Value != "dark" {
+			t.Fatalf("unexpected entry: %+v", e)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("future-clock entry was dropped instead of accepted")
 	}
 }
 
