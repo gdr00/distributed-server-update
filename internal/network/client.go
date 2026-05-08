@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gdr00/distributed-server-update/internal/network/userpb"
+	"github.com/gdr00/distributed-server-update/internal/types"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
@@ -52,7 +53,7 @@ func NewClient(serverAddress string) (*Client, error) {
 
 func (c *Client) Close() error { return c.conn.Close() }
 
-func (c *Client) Subscribe(ctx context.Context, getSnapshot func() []*userpb.SettingEntry, onUpdate func(*userpb.ServerStateUpdate)) {
+func (c *Client) Subscribe(ctx context.Context, getSnapshot func() types.Snapshot, onUpdate func(types.SettingEntry)) {
 	for {
 		s := getSnapshot()
 		if err := c.runStream(ctx, s, onUpdate); err != nil {
@@ -65,19 +66,19 @@ func (c *Client) Subscribe(ctx context.Context, getSnapshot func() []*userpb.Set
 	}
 }
 
-func (c *Client) sync(ctx context.Context, localState []*userpb.SettingEntry, onUpdate func(*userpb.ServerStateUpdate)) error {
-	resp, err := c.client.Sync(ctx, &userpb.SyncRequest{LocalState: localState})
+func (c *Client) Sync(ctx context.Context, localSnapshot types.Snapshot, onUpdate func(types.SettingEntry)) error {
+	resp, err := c.client.Sync(ctx, &userpb.SyncRequest{LocalState: SnapshotToProto(localSnapshot)})
 	if err != nil {
 		return fmt.Errorf("sync failed: %w", err)
 	}
 	for _, entry := range resp.NewerEntries {
-		onUpdate(&userpb.ServerStateUpdate{Entry: entry})
+		onUpdate(FromProto(entry))
 	}
 	return nil
 }
 
-func (c *Client) runStream(ctx context.Context, localState []*userpb.SettingEntry, onUpdate func(*userpb.ServerStateUpdate)) error {
-	if err := c.sync(ctx, localState, onUpdate); err != nil {
+func (c *Client) runStream(ctx context.Context, localSnapshot types.Snapshot, onUpdate func(types.SettingEntry)) error {
+	if err := c.Sync(ctx, localSnapshot, onUpdate); err != nil {
 		return err
 	}
 	stream, err := c.client.SubscribeStateUpdates(ctx, &emptypb.Empty{})
@@ -89,6 +90,6 @@ func (c *Client) runStream(ctx context.Context, localState []*userpb.SettingEntr
 		if err != nil {
 			return err
 		}
-		onUpdate(update)
+		onUpdate(FromProto(update.Entry))
 	}
 }

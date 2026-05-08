@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/gdr00/distributed-server-update/internal/crdt"
 	"github.com/gdr00/distributed-server-update/internal/logic"
@@ -120,13 +121,35 @@ func (ctrl *Controller) Run(ctx context.Context) error {
 
 	// network → crdt (incoming remote updates)
 	for _, client := range ctrl.clients {
-		go client.Subscribe(ctx, func() []*userpb.SettingEntry {
-			return network.SnapshotToProto(ctrl.crdt.Snapshot())
-		}, func(update *userpb.ServerStateUpdate) {
-			ctrl.crdt.NotifyRemote(network.FromProto(update.Entry))
+		go client.Subscribe(ctx, ctrl.crdt.Snapshot, func(entry types.SettingEntry) {
+			ctrl.crdt.NotifyRemote(entry)
 		})
 	}
 
+	go ctrl.runAntiEntropy(ctx)
+
 	<-ctx.Done()
 	return nil
+}
+
+func (ctrl *Controller) runAntiEntropy(ctx context.Context) {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			ctrl.syncAllPeers(ctx)
+		}
+	}
+}
+
+func (ctrl *Controller) syncAllPeers(ctx context.Context) {
+	snap := ctrl.crdt.Snapshot()
+	for _, client := range ctrl.clients {
+		go client.Sync(ctx, snap, func(entry types.SettingEntry) {
+			ctrl.crdt.NotifyRemote(entry)
+		})
+	}
 }

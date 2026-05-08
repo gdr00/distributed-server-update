@@ -384,8 +384,8 @@ func TestClient_Sync(t *testing.T) {
 	defer c.Close()
 
 	var received []types.SettingEntry
-	if err := c.sync(context.Background(), nil, func(u *userpb.ServerStateUpdate) {
-		received = append(received, FromProto(u.Entry))
+	if err := c.Sync(context.Background(), types.Snapshot{}, func(e types.SettingEntry) {
+		received = append(received, e)
 	}); err != nil {
 		t.Fatalf("sync() error = %v", err)
 	}
@@ -402,7 +402,7 @@ func TestClient_Sync_Error(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := c.sync(ctx, nil, func(*userpb.ServerStateUpdate) {})
+	err := c.Sync(ctx, types.Snapshot{}, func(types.SettingEntry) {})
 	if err == nil {
 		t.Fatal("expected error with cancelled context")
 	}
@@ -416,7 +416,7 @@ func TestClient_RunStream(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	c.runStream(ctx, nil, func(*userpb.ServerStateUpdate) {})
+	c.runStream(ctx, types.Snapshot{}, func(types.SettingEntry) {})
 }
 
 func TestClient_RunStream_SyncError(t *testing.T) {
@@ -427,7 +427,7 @@ func TestClient_RunStream_SyncError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	c.runStream(ctx, nil, func(*userpb.ServerStateUpdate) {})
+	c.runStream(ctx, types.Snapshot{}, func(types.SettingEntry) {})
 }
 
 func TestClient_Subscribe(t *testing.T) {
@@ -440,7 +440,7 @@ func TestClient_Subscribe(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		c.Subscribe(ctx, func() []*userpb.SettingEntry { return nil }, func(*userpb.ServerStateUpdate) {})
+		c.Subscribe(ctx, func() types.Snapshot { return types.Snapshot{} }, func(types.SettingEntry) {})
 		close(done)
 	}()
 
