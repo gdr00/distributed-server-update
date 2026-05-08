@@ -7,11 +7,9 @@ import (
 	"time"
 )
 
-type LogicalClock uint32
-
 type HLC struct {
 	WallTime int64
-	Logical  LogicalClock
+	Logical  uint32
 	NodeID   string
 }
 
@@ -59,8 +57,8 @@ func (h *HLC) Update(received HLC) error {
 // Logical counter update
 //
 // Handle overflow of the logical counter
-func (h *HLC) advanceLogical(base LogicalClock) {
-	if base == ^LogicalClock(0) {
+func (h *HLC) advanceLogical(base uint32) {
+	if base == ^uint32(0) {
 		h.WallTime++
 		h.Logical = 0
 		return
