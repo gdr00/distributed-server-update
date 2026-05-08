@@ -7,10 +7,44 @@ import (
 	"time"
 )
 
+// Clock interface for test purposes
+type Clock interface {
+	Now() int64
+}
+
+type SystemClock struct{}
+
+func (s SystemClock) Now() int64 { return time.Now().UnixNano() }
+
 type HLC struct {
 	WallTime int64
 	Logical  uint32
 	NodeID   string
+	clock    Clock
+}
+
+type Option func(*HLC)
+
+// Inject vars for testing
+func SetHLC(c HLC) Option {
+	return func(h *HLC) {
+		h.WallTime = c.WallTime
+		h.Logical = c.Logical
+		h.clock = c.clock
+	}
+}
+
+// Init HLC
+func NewHLC(nodeID string, opts ...Option) *HLC {
+	h := &HLC{
+		NodeID: nodeID,
+		clock:  SystemClock{},
+	}
+
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 func (a HLC) Before(b HLC) bool {
@@ -28,7 +62,7 @@ func (a HLC) Before(b HLC) bool {
 // prevents partially bad actors/missconfigured nodes with sys clock in the future discarding updates with delta T > 1min
 func (h *HLC) Update(received HLC) error {
 
-	now := time.Now().UnixNano()
+	now := h.clock.Now()
 
 	if received.WallTime-now > int64(time.Minute) {
 
@@ -37,13 +71,16 @@ func (h *HLC) Update(received HLC) error {
 
 	wall := max(h.WallTime, received.WallTime, now)
 
-	if wall == h.WallTime && wall == received.WallTime {
+	oldWall := h.WallTime
+	h.WallTime = wall
+
+	if wall == oldWall && wall == received.WallTime {
 		// local and remote are equal, phy might be lower
 		h.advanceLogical(max(h.Logical, received.Logical))
 	} else if wall == received.WallTime {
 		// received is ahead
 		h.advanceLogical(received.Logical)
-	} else if wall == h.WallTime {
+	} else if wall == oldWall {
 		// local is ahead
 		h.advanceLogical(h.Logical)
 	} else {
