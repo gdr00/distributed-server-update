@@ -17,11 +17,12 @@ import (
 )
 
 type Controller struct {
-	cfg     types.Config
-	crdt    *crdt.CRDT
-	network *network.UpdateServer
-	clients []*network.Client
-	logic   *logic.Logic
+	cfg          types.Config
+	crdt         *crdt.CRDT
+	network      *network.UpdateServer
+	clients      []*network.Client
+	logic        *logic.Logic
+	tombstoneTTL int64
 }
 
 func New(cfg types.Config) (*Controller, error) {
@@ -34,10 +35,11 @@ func New(cfg types.Config) (*Controller, error) {
 		return nil, fmt.Errorf("failed to create peer clients: %w", err)
 	}
 	ctrl := &Controller{
-		cfg:     cfg,
-		crdt:    c,
-		clients: clients,
-		logic:   logic.New(cfg.SettingsPath),
+		cfg:          cfg,
+		crdt:         c,
+		clients:      clients,
+		logic:        logic.New(cfg.SettingsPath),
+		tombstoneTTL: int64(2 * 7 * 24 * time.Hour),
 	}
 	ctrl.network = network.NewUpdateServer(func() types.Snapshot {
 		return ctrl.crdt.Snapshot()
@@ -128,6 +130,8 @@ func (ctrl *Controller) Run(ctx context.Context) error {
 
 	go ctrl.runAntiEntropy(ctx)
 
+	go ctrl.runTombstoneGC(ctx)
+
 	<-ctx.Done()
 	return nil
 }
@@ -151,5 +155,18 @@ func (ctrl *Controller) syncAllPeers(ctx context.Context) {
 		go client.Sync(ctx, snap, func(entry types.SettingEntry) {
 			ctrl.crdt.NotifyRemote(entry)
 		})
+	}
+}
+
+func (ctrl *Controller) runTombstoneGC(ctx context.Context) {
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			ctrl.crdt.PurgeTombstones(ctrl.tombstoneTTL)
+		}
 	}
 }

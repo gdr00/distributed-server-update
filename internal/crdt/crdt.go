@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gdr00/distributed-server-update/internal/types"
 	"github.com/google/uuid"
@@ -30,6 +31,7 @@ type CRDT struct {
 	remoteCh    chan types.SettingEntry       // channel for remote setting updates
 	queryCh     chan queryRequest             // channel to query for key value pairs in settings
 	snapshotCh  chan snapshotRequest          // channel to query for a full snapshot
+	gcCh        chan int64                    // channel to trigger tombstone GC with a TTL in nanoseconds
 	OnBroadcast func(types.SettingEntry)      // injected callback for outgoing broadcasts
 	OnFileSync  func(types.SettingEntry)      // injected callback for file writes
 }
@@ -47,6 +49,7 @@ func New(workDir string) (*CRDT, error) {
 		remoteCh:   make(chan types.SettingEntry, 10),
 		queryCh:    make(chan queryRequest, 10),
 		snapshotCh: make(chan snapshotRequest, 10),
+		gcCh:       make(chan int64, 1),
 	}
 	if err := c.loadState(); err != nil {
 		return nil, err
@@ -99,6 +102,11 @@ func (c *CRDT) NotifyLocal(entry types.SettingEntry) {
 // for network package — push a remote update
 func (c *CRDT) NotifyRemote(entry types.SettingEntry) {
 	c.remoteCh <- entry
+}
+
+// PurgeTombstones schedules removal of deleted entries older than ttl nanoseconds.
+func (c *CRDT) PurgeTombstones(ttl int64) {
+	c.gcCh <- ttl
 }
 
 // for any package — query a single key
@@ -155,15 +163,30 @@ func (c *CRDT) Run(ctx context.Context) {
 					c.OnFileSync(entry)
 				}
 			}
-		// I recive a query about current state of an entry
 		case req := <-c.queryCh:
 			req.resp <- c.state[req.key]
-		// I recive a query about state
 		case req := <-c.snapshotCh:
 			req.resp <- c.snapshot()
+		case ttl := <-c.gcCh:
+			c.purgeTombstones(ttl)
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+func (c *CRDT) purgeTombstones(ttl int64) {
+	diff := time.Now().UnixNano() - ttl
+	purged := 0
+	for key, entry := range c.state {
+		if entry.Deleted && entry.Clock.WallTime < diff {
+			delete(c.state, key)
+			purged++
+		}
+	}
+	if purged > 0 {
+		c.saveState()
+		log.Printf("tombstone GC: purged %d entries", purged)
 	}
 }
 
