@@ -16,15 +16,18 @@ import (
 
 func setupCRDT(t *testing.T) (*CRDT, string) {
 	t.Helper()
-	dir := t.TempDir() // auto cleaned up after test
-	// create a minimal valid state file so loadState doesn't fatal
+	dir := t.TempDir()
 	if err := os.WriteFile(dir+"/crdt_state.json", []byte("{}"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(dir+"/node_id", []byte("test-node"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	return New(dir), dir
+	c, err := New(dir)
+	if err != nil {
+		t.Fatalf("setupCRDT: %v", err)
+	}
+	return c, dir
 }
 
 func hlc(wall int64, logical uint32, node string) types.HLC {
@@ -371,6 +374,34 @@ func TestRun_SaveStateWriteFailureIsNonFatal(t *testing.T) {
 		// broadcast fires even when save fails
 	case <-time.After(time.Second):
 		t.Fatal("timeout — run should continue despite save failure")
+	}
+}
+
+func TestNew_NotInitialized(t *testing.T) {
+	dir := t.TempDir()
+	_, err := New(dir)
+	if err == nil {
+		t.Fatal("expected error when node_id missing")
+	}
+}
+
+func TestNew_MissingStateFile(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(dir+"/node_id", []byte("test-node"), 0600)
+	// no crdt_state.json
+	_, err := New(dir)
+	if err == nil {
+		t.Fatal("expected error when crdt_state.json missing")
+	}
+}
+
+func TestNew_CorruptedState(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(dir+"/node_id", []byte("test-node"), 0600)
+	os.WriteFile(dir+"/crdt_state.json", []byte("{bad json"), 0600)
+	_, err := New(dir)
+	if err == nil {
+		t.Fatal("expected error when crdt_state.json is corrupt")
 	}
 }
 

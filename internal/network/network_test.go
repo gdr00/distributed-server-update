@@ -346,18 +346,31 @@ func TestNewClient_LazyDial(t *testing.T) {
 }
 
 func TestNewClients_Empty(t *testing.T) {
-	clients := NewClients(nil)
+	clients, err := NewClients(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(clients) != 0 {
 		t.Fatalf("expected 0 clients, got %d", len(clients))
 	}
 }
 
 func TestNewClients_WithAddress(t *testing.T) {
-	clients := NewClients([]string{"localhost:19999"})
+	clients, err := NewClients([]string{"localhost:19999"})
+	if err != nil {
+		t.Fatalf("NewClients() error = %v", err)
+	}
 	if len(clients) != 1 {
 		t.Fatalf("expected 1 client, got %d", len(clients))
 	}
 	clients[0].Close()
+}
+
+func TestNewClients_InvalidAddress(t *testing.T) {
+	_, err := NewClients([]string{"not-valid::address"})
+	if err == nil {
+		t.Fatal("expected error for invalid address")
+	}
 }
 
 func TestClient_Sync(t *testing.T) {

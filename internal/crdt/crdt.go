@@ -34,9 +34,13 @@ type CRDT struct {
 	OnFileSync  func(types.SettingEntry)      // injected callback for file writes
 }
 
-func New(workDir string) *CRDT {
-	return &CRDT{
-		clock:      *types.NewHLC(loadNodeID(workDir)),
+func New(workDir string) (*CRDT, error) {
+	nodeID, err := loadNodeID(workDir)
+	if err != nil {
+		return nil, err
+	}
+	c := &CRDT{
+		clock:      *types.NewHLC(nodeID),
 		state:      make(map[string]types.SettingEntry),
 		dir:        workDir,
 		localCh:    make(chan types.SettingEntry, 10),
@@ -44,6 +48,10 @@ func New(workDir string) *CRDT {
 		queryCh:    make(chan queryRequest, 10),
 		snapshotCh: make(chan snapshotRequest, 10),
 	}
+	if err := c.loadState(); err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 func Init(entries types.Settings, workDir string) error {
@@ -124,7 +132,6 @@ func (c *CRDT) merge(incoming types.SettingEntry) (changed bool) {
 }
 
 func (c *CRDT) Run(ctx context.Context) {
-	c.loadState()
 	for {
 		select {
 		// I have incoming changes from local state
@@ -162,35 +169,26 @@ func (c *CRDT) Run(ctx context.Context) {
 	}
 }
 
-func loadNodeID(dir string) string {
+func loadNodeID(dir string) (string, error) {
 	path := filepath.Join(dir, "node_id")
-
 	data, err := os.ReadFile(path)
-
 	if err != nil {
-		if os.IsNotExist(err) {
-			log.Fatalf("nodeId not found, run '%s init' first", os.Args[0])
-		}
-		log.Fatalf("error occurred while loading node id: %v", err)
+		return "", fmt.Errorf("node not initialized (run init first): %w", err)
 	}
-
-	return strings.TrimSpace(string(data))
+	return strings.TrimSpace(string(data)), nil
 }
 
-// Load the previous CRTD state
-func (c *CRDT) loadState() {
+// Load the previous CRDT state
+func (c *CRDT) loadState() error {
 	path := filepath.Join(c.dir, "crdt_state.json")
-
 	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		log.Fatalf("crdt state not found, run '%s init' first", os.Args[0])
-	}
 	if err != nil {
-		log.Fatalf("failed to read crdt state: %v", err)
+		return fmt.Errorf("crdt state not found (run init first): %w", err)
 	}
 	if err := json.Unmarshal(data, &c.state); err != nil {
-		log.Fatalf("failed to parse crdt state: %v", err)
+		return fmt.Errorf("failed to parse crdt state: %w", err)
 	}
+	return nil
 }
 
 // Save the current state

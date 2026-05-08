@@ -23,17 +23,25 @@ type Controller struct {
 	logic   *logic.Logic
 }
 
-func New(cfg types.Config) *Controller {
+func New(cfg types.Config) (*Controller, error) {
+	c, err := crdt.New(cfg.CRDTWorkdir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load crdt: %w", err)
+	}
+	clients, err := network.NewClients(cfg.PeerAddresses)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create peer clients: %w", err)
+	}
 	ctrl := &Controller{
 		cfg:     cfg,
-		crdt:    crdt.New(cfg.CRDTWorkdir),
-		clients: network.NewClients(cfg.PeerAddresses),
+		crdt:    c,
+		clients: clients,
 		logic:   logic.New(cfg.SettingsPath),
 	}
 	ctrl.network = network.NewUpdateServer(func() types.Snapshot {
 		return ctrl.crdt.Snapshot()
 	})
-	return ctrl
+	return ctrl, nil
 }
 
 // Init node with the "master" configuration when new system is initialized

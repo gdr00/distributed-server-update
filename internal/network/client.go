@@ -19,20 +19,20 @@ type Client struct {
 	client userpb.UpdateServiceClient
 }
 
-func NewClients(addrs []string) []*Client {
+func NewClients(addrs []string) ([]*Client, error) {
 	clients := make([]*Client, 0, len(addrs))
 	for _, addr := range addrs {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil || host == "" || port == "" {
-			log.Fatalf("invalid peer address %q: %v", addr, err)
+			return nil, fmt.Errorf("invalid peer address %q: %v", addr, err)
 		}
 		c, err := NewClient(addr)
 		if err != nil {
-			log.Fatalf("failed to create client for %s: %v", addr, err)
+			return nil, fmt.Errorf("failed to create client for %s: %w", addr, err)
 		}
 		clients = append(clients, c)
 	}
-	return clients
+	return clients, nil
 }
 
 func NewClient(serverAddress string) (*Client, error) {

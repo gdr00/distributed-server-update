@@ -42,7 +42,11 @@ func newTestController(t *testing.T, workDir string, settingsPath string, port u
 		GRPCPort:      port,
 		PeerAddresses: peers,
 	}
-	return New(cfg)
+	ctrl, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return ctrl
 }
 
 // InitNode tests
@@ -247,13 +251,26 @@ func TestRun_InvalidRPCPortReturnsError(t *testing.T) {
 		SettingsPath: settingsPath,
 		GRPCPort:     1, // privileged port — should fail without root
 	}
-	ctrl := New(cfg)
+	ctrl, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := ctrl.Run(ctx)
-	if err == nil {
+	if err := ctrl.Run(ctx); err == nil {
 		t.Fatal("expected error for privileged port")
+	}
+}
+
+func TestNew_NotInitialized(t *testing.T) {
+	cfg := types.Config{
+		CRDTWorkdir:  t.TempDir(), // no node_id — not initialized
+		SettingsPath: filepath.Join(t.TempDir(), "settings.json"),
+	}
+	_, err := New(cfg)
+	if err == nil {
+		t.Fatal("expected error for uninitialized crdt dir")
 	}
 }
 
@@ -341,7 +358,10 @@ func TestRun_WithPeerAddress(t *testing.T) {
 		GRPCPort:      0,
 		PeerAddresses: []string{"localhost:19999"}, // lazy dial — no server needed
 	}
-	ctrl := New(cfg)
+	ctrl, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan error, 1)

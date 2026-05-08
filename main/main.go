@@ -50,7 +50,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	ctrl := controller.New(cfg)
+	ctrl, err := controller.New(cfg)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
