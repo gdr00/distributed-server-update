@@ -55,19 +55,27 @@
 			<div id="nav">
 				<select id="files">
 				
-				<option value="file0">github.com/gdr00/distributed-server-update/internal/controller/controller.go (90.7%)</option>
+				<option value="file0">github.com/gdr00/distributed-server-update/internal/controller/controller.go (92.4%)</option>
 				
-				<option value="file1">github.com/gdr00/distributed-server-update/internal/crdt/crdt.go (88.0%)</option>
+				<option value="file1">github.com/gdr00/distributed-server-update/internal/controller/types.go (100.0%)</option>
 				
-				<option value="file2">github.com/gdr00/distributed-server-update/internal/logic/logic.go (90.0%)</option>
+				<option value="file2">github.com/gdr00/distributed-server-update/internal/crdt/crdt.go (90.5%)</option>
 				
-				<option value="file3">github.com/gdr00/distributed-server-update/internal/network/client.go (86.8%)</option>
+				<option value="file3">github.com/gdr00/distributed-server-update/internal/logic/logic.go (90.0%)</option>
 				
-				<option value="file4">github.com/gdr00/distributed-server-update/internal/network/grpc.go (95.2%)</option>
+				<option value="file4">github.com/gdr00/distributed-server-update/internal/network/client.go (86.8%)</option>
 				
-				<option value="file5">github.com/gdr00/distributed-server-update/internal/network/server.go (84.6%)</option>
+				<option value="file5">github.com/gdr00/distributed-server-update/internal/network/grpc.go (95.2%)</option>
 				
-				<option value="file6">github.com/gdr00/distributed-server-update/internal/types/types.go (100.0%)</option>
+				<option value="file6">github.com/gdr00/distributed-server-update/internal/network/server.go (84.6%)</option>
+				
+				<option value="file7">github.com/gdr00/distributed-server-update/internal/network/userpb/update_state.pb.go (0.0%)</option>
+				
+				<option value="file8">github.com/gdr00/distributed-server-update/internal/network/userpb/update_state_grpc.pb.go (0.0%)</option>
+				
+				<option value="file9">github.com/gdr00/distributed-server-update/internal/types/types.go (100.0%)</option>
+				
+				<option value="file10">github.com/gdr00/distributed-server-update/main/main.go (0.0%)</option>
 				
 				</select>
 			</div>
@@ -89,6 +97,7 @@ import (
         "log"
         "os"
         "path/filepath"
+        "time"
 
         "github.com/gdr00/distributed-server-update/internal/crdt"
         "github.com/gdr00/distributed-server-update/internal/logic"
@@ -99,28 +108,42 @@ import (
 )
 
 type Controller struct {
-        cfg     types.Config
-        crdt    *crdt.CRDT
-        network *network.UpdateServer
-        clients []*network.Client
-        logic   *logic.Logic
+        cfg                 Config
+        crdt                *crdt.CRDT
+        network             *network.UpdateServer
+        clients             []*network.Client
+        logic               *logic.Logic
+        tombstoneTTL        int64
+        antiEntropyInterval time.Duration
+        gcInterval          time.Duration
 }
 
-func New(cfg types.Config) *Controller <span class="cov8" title="1">{
-        ctrl := &amp;Controller{
-                cfg:     cfg,
-                crdt:    crdt.New(cfg.CRDTWorkdir),
-                clients: network.NewClients(cfg.PeerAddresses),
-                logic:   logic.New(cfg.SettingsPath),
+func New(cfg Config) (*Controller, error) <span class="cov8" title="1">{
+        c, err := crdt.New(cfg.CRDTWorkdir)
+        if err != nil </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("failed to load crdt: %w", err)
+        }</span>
+        <span class="cov8" title="1">clients, err := network.NewClients(cfg.PeerAddresses)
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("failed to create peer clients: %w", err)
+        }</span>
+        <span class="cov8" title="1">ctrl := &amp;Controller{
+                cfg:                 cfg,
+                crdt:                c,
+                clients:             clients,
+                logic:               logic.New(cfg.SettingsPath),
+                tombstoneTTL:        int64(2 * 7 * 24 * time.Hour),
+                antiEntropyInterval: 60 * time.Second,
+                gcInterval:          24 * time.Hour,
         }
         ctrl.network = network.NewUpdateServer(func() types.Snapshot </span><span class="cov0" title="0">{
                 return ctrl.crdt.Snapshot()
         }</span>)
-        <span class="cov8" title="1">return ctrl</span>
+        <span class="cov8" title="1">return ctrl, nil</span>
 }
 
 // Init node with the "master" configuration when new system is initialized
-func InitNode(c types.Config) error <span class="cov8" title="1">{
+func InitNode(c Config) error <span class="cov8" title="1">{
         entries, err := logic.New(c.SettingsPath).Read()
         if err != nil </span><span class="cov8" title="1">{
                 return fmt.Errorf("failed to read settings: %w", err)
@@ -132,7 +155,7 @@ func InitNode(c types.Config) error <span class="cov8" title="1">{
 }
 
 // Init node to sync from others on the network
-func InitEmptyNode(cfg types.Config) error <span class="cov8" title="1">{
+func InitEmptyNode(cfg Config) error <span class="cov8" title="1">{
         if err := os.MkdirAll(cfg.CRDTWorkdir, 0700); err != nil </span><span class="cov8" title="1">{
                 return fmt.Errorf("failed to create config dir: %w", err)
         }</span>
@@ -195,19 +218,87 @@ func (ctrl *Controller) Run(ctx context.Context) error <span class="cov8" title=
 
         // network → crdt (incoming remote updates)
         <span class="cov8" title="1">for _, client := range ctrl.clients </span><span class="cov8" title="1">{
-                go client.Subscribe(ctx, func() []*userpb.SettingEntry </span><span class="cov8" title="1">{
-                        return network.SnapshotToProto(ctrl.crdt.Snapshot())
-                }</span>, func(update *userpb.ServerStateUpdate) <span class="cov0" title="0">{
-                        ctrl.crdt.NotifyRemote(network.FromProto(update.Entry))
+                go client.Subscribe(ctx, ctrl.crdt.Snapshot, func(entry types.SettingEntry) </span><span class="cov0" title="0">{
+                        ctrl.crdt.NotifyRemote(entry)
                 }</span>)
         }
 
-        <span class="cov8" title="1">&lt;-ctx.Done()
+        <span class="cov8" title="1">go ctrl.runAntiEntropy(ctx)
+
+        go ctrl.runTombstoneGC(ctx)
+
+        &lt;-ctx.Done()
         return nil</span>
+}
+
+func (ctrl *Controller) runAntiEntropy(ctx context.Context) <span class="cov8" title="1">{
+        ticker := time.NewTicker(ctrl.antiEntropyInterval)
+        defer ticker.Stop()
+        for </span><span class="cov8" title="1">{
+                select </span>{
+                case &lt;-ctx.Done():<span class="cov8" title="1">
+                        return</span>
+                case &lt;-ticker.C:<span class="cov8" title="1">
+                        ctrl.syncAllPeers(ctx)</span>
+                }
+        }
+}
+
+func (ctrl *Controller) syncAllPeers(ctx context.Context) <span class="cov8" title="1">{
+        snap := ctrl.crdt.Snapshot()
+        for _, client := range ctrl.clients </span><span class="cov8" title="1">{
+                go client.Sync(ctx, snap, func(entry types.SettingEntry) </span><span class="cov8" title="1">{
+                        ctrl.crdt.NotifyRemote(entry)
+                }</span>)
+        }
+}
+
+func (ctrl *Controller) runTombstoneGC(ctx context.Context) <span class="cov8" title="1">{
+        ticker := time.NewTicker(ctrl.gcInterval)
+        defer ticker.Stop()
+        for </span><span class="cov8" title="1">{
+                select </span>{
+                case &lt;-ctx.Done():<span class="cov8" title="1">
+                        return</span>
+                case &lt;-ticker.C:<span class="cov8" title="1">
+                        ctrl.crdt.PurgeTombstones(ctrl.tombstoneTTL)</span>
+                }
+        }
 }
 </pre>
 		
-		<pre class="file" id="file1" style="display: none">package crdt
+		<pre class="file" id="file1" style="display: none">package controller
+
+import (
+        "encoding/json"
+        "fmt"
+        "os"
+)
+
+type Config struct {
+        PeerAddresses []string
+        SettingsPath  string
+        CRDTWorkdir   string
+        GRPCPort      uint16
+}
+
+func LoadConfig(configPath string) (Config, error) <span class="cov8" title="1">{
+        data, err := os.ReadFile(configPath)
+
+        if err != nil </span><span class="cov8" title="1">{
+                return Config{}, fmt.Errorf("failed to read config file: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">var cfg Config
+        if err := json.Unmarshal(data, &amp;cfg); err != nil </span><span class="cov8" title="1">{
+                return Config{}, fmt.Errorf("failed to parse config file: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">return cfg, nil</span>
+}
+</pre>
+		
+		<pre class="file" id="file2" style="display: none">package crdt
 
 import (
         "context"
@@ -218,6 +309,7 @@ import (
         "os"
         "path/filepath"
         "strings"
+        "time"
 
         "github.com/gdr00/distributed-server-update/internal/types"
         "github.com/google/uuid"
@@ -239,21 +331,31 @@ type CRDT struct {
         remoteCh    chan types.SettingEntry       // channel for remote setting updates
         queryCh     chan queryRequest             // channel to query for key value pairs in settings
         snapshotCh  chan snapshotRequest          // channel to query for a full snapshot
+        gcCh        chan int64                    // channel to trigger tombstone GC with a TTL in nanoseconds
         OnBroadcast func(types.SettingEntry)      // injected callback for outgoing broadcasts
         OnFileSync  func(types.SettingEntry)      // injected callback for file writes
 }
 
-func New(workDir string) *CRDT <span class="cov8" title="1">{
-        return &amp;CRDT{
-                clock:      *types.NewHLC(loadNodeID(workDir)),
+func New(workDir string) (*CRDT, error) <span class="cov8" title="1">{
+        nodeID, err := loadNodeID(workDir)
+        if err != nil </span><span class="cov8" title="1">{
+                return nil, err
+        }</span>
+        <span class="cov8" title="1">c := &amp;CRDT{
+                clock:      *types.NewHLC(nodeID),
                 state:      make(map[string]types.SettingEntry),
                 dir:        workDir,
                 localCh:    make(chan types.SettingEntry, 10),
                 remoteCh:   make(chan types.SettingEntry, 10),
                 queryCh:    make(chan queryRequest, 10),
                 snapshotCh: make(chan snapshotRequest, 10),
+                gcCh:       make(chan int64, 1),
         }
-}</span>
+        if err := c.loadState(); err != nil </span><span class="cov8" title="1">{
+                return nil, err
+        }</span>
+        <span class="cov8" title="1">return c, nil</span>
+}
 
 func Init(entries types.Settings, workDir string) error <span class="cov8" title="1">{
         if err := os.MkdirAll(workDir, 0700); err != nil </span><span class="cov8" title="1">{
@@ -302,6 +404,11 @@ func (c *CRDT) NotifyRemote(entry types.SettingEntry) <span class="cov8" title="
         c.remoteCh &lt;- entry
 }</span>
 
+// PurgeTombstones schedules removal of deleted entries older than ttl nanoseconds.
+func (c *CRDT) PurgeTombstones(ttl int64) <span class="cov8" title="1">{
+        c.gcCh &lt;- ttl
+}</span>
+
 // for any package — query a single key
 func (c *CRDT) Get(key string) types.SettingEntry <span class="cov8" title="1">{
         req := queryRequest{key: key, resp: make(chan types.SettingEntry, 1)}
@@ -333,7 +440,6 @@ func (c *CRDT) merge(incoming types.SettingEntry) (changed bool) <span class="co
 }
 
 func (c *CRDT) Run(ctx context.Context) <span class="cov8" title="1">{
-        c.loadState()
         for </span><span class="cov8" title="1">{
                 select </span>{
                 // I have incoming changes from local state
@@ -348,9 +454,8 @@ func (c *CRDT) Run(ctx context.Context) <span class="cov8" title="1">{
                         }
                 // I have incoming changes from one of the peers I am subscribed to
                 case entry := &lt;-c.remoteCh:<span class="cov8" title="1">
-                        // Drop entries from the future to prevent permanent lockout
                         if err := c.clock.Update(entry.Clock); err != nil </span><span class="cov8" title="1">{
-                                log.Printf("dropping remote update: %v", err)
+                                log.Printf("remote clock anomaly, entry rejected: %v, %v", err, entry)
                                 continue</span>
                         }
                         <span class="cov8" title="1">if c.merge(entry) </span><span class="cov8" title="1">{
@@ -359,65 +464,97 @@ func (c *CRDT) Run(ctx context.Context) <span class="cov8" title="1">{
                                         c.OnFileSync(entry)
                                 }</span>
                         }
-                // I recive a query about current state of an entry
                 case req := &lt;-c.queryCh:<span class="cov8" title="1">
                         req.resp &lt;- c.state[req.key]</span>
-                // I recive a query about state
                 case req := &lt;-c.snapshotCh:<span class="cov8" title="1">
                         req.resp &lt;- c.snapshot()</span>
+                case ttl := &lt;-c.gcCh:<span class="cov8" title="1">
+                        c.purgeTombstones(ttl)</span>
                 case &lt;-ctx.Done():<span class="cov8" title="1">
                         return</span>
                 }
         }
 }
 
-func loadNodeID(dir string) string <span class="cov8" title="1">{
-        path := filepath.Join(dir, "node_id")
-
-        data, err := os.ReadFile(path)
-
-        if err != nil </span><span class="cov0" title="0">{
-                if os.IsNotExist(err) </span><span class="cov0" title="0">{
-                        log.Fatalf("nodeId not found, run '%s init' first", os.Args[0])
+func (c *CRDT) purgeTombstones(ttl int64) <span class="cov8" title="1">{
+        diff := time.Now().UnixNano() - ttl
+        purged := 0
+        for key, entry := range c.state </span><span class="cov8" title="1">{
+                if entry.Deleted &amp;&amp; entry.Clock.WallTime &lt; diff </span><span class="cov8" title="1">{
+                        delete(c.state, key)
+                        purged++
                 }</span>
-                <span class="cov0" title="0">log.Fatalf("error occurred while loading node id: %v", err)</span>
         }
-
-        <span class="cov8" title="1">return strings.TrimSpace(string(data))</span>
+        <span class="cov8" title="1">if purged &gt; 0 </span><span class="cov8" title="1">{
+                c.saveState()
+                log.Printf("tombstone GC: purged %d entries", purged)
+        }</span>
 }
 
-// Load the previous CRTD state
-func (c *CRDT) loadState() <span class="cov8" title="1">{
-        path := filepath.Join(c.dir, "crdt_state.json")
-
+func loadNodeID(dir string) (string, error) <span class="cov8" title="1">{
+        path := filepath.Join(dir, "node_id")
         data, err := os.ReadFile(path)
-        if os.IsNotExist(err) </span><span class="cov0" title="0">{
-                log.Fatalf("crdt state not found, run '%s init' first", os.Args[0])
+        if err != nil </span><span class="cov8" title="1">{
+                return "", fmt.Errorf("node not initialized (run init first): %w", err)
         }</span>
-        <span class="cov8" title="1">if err != nil </span><span class="cov0" title="0">{
-                log.Fatalf("failed to read crdt state: %v", err)
+        <span class="cov8" title="1">return strings.TrimSpace(string(data)), nil</span>
+}
+
+// Load the previous CRDT state
+func (c *CRDT) loadState() error <span class="cov8" title="1">{
+        path := filepath.Join(c.dir, "crdt_state.json")
+        data, err := os.ReadFile(path)
+        if err != nil </span><span class="cov8" title="1">{
+                return fmt.Errorf("crdt state not found (run init first): %w", err)
         }</span>
-        <span class="cov8" title="1">if err := json.Unmarshal(data, &amp;c.state); err != nil </span><span class="cov0" title="0">{
-                log.Fatalf("failed to parse crdt state: %v", err)
+        <span class="cov8" title="1">if err := json.Unmarshal(data, &amp;c.state); err != nil </span><span class="cov8" title="1">{
+                return fmt.Errorf("failed to parse crdt state: %w", err)
         }</span>
+        <span class="cov8" title="1">return nil</span>
 }
 
 // Save the current state
 func (c *CRDT) saveState() <span class="cov8" title="1">{
-        path := filepath.Join(c.dir, "crdt_state.json")
-
         data, err := json.Marshal(c.state)
         if err != nil </span><span class="cov0" title="0">{
                 log.Printf("failed to marshal crdt state: %v", err)
                 return
         }</span>
-        <span class="cov8" title="1">if err := os.WriteFile(path, data, 0600); err != nil </span><span class="cov8" title="1">{
+        <span class="cov8" title="1">if err := atomicWriteFile(filepath.Join(c.dir, "crdt_state.json"), data); err != nil </span><span class="cov0" title="0">{
                 log.Printf("failed to save crdt state: %v", err)
         }</span>
 }
+
+func atomicWriteFile(path string, data []byte) error <span class="cov8" title="1">{
+        tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp_*")
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">ok := false
+        defer func() </span><span class="cov8" title="1">{
+                tmp.Close()
+                if !ok </span><span class="cov0" title="0">{
+                        os.Remove(tmp.Name())
+                }</span>
+        }()
+        <span class="cov8" title="1">if _, err = tmp.Write(data); err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">if err = tmp.Sync(); err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">if err = tmp.Close(); err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">if err = os.Rename(tmp.Name(), path); err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">ok = true
+        return nil</span>
+}
 </pre>
 		
-		<pre class="file" id="file2" style="display: none">package logic
+		<pre class="file" id="file3" style="display: none">package logic
 
 import (
         "context"
@@ -573,7 +710,7 @@ func (l *Logic) applyChanges(onChange func(types.SettingEntry)) <span class="cov
 }
 </pre>
 		
-		<pre class="file" id="file3" style="display: none">package network
+		<pre class="file" id="file4" style="display: none">package network
 
 import (
         "context"
@@ -583,6 +720,7 @@ import (
         "time"
 
         "github.com/gdr00/distributed-server-update/internal/network/userpb"
+        "github.com/gdr00/distributed-server-update/internal/types"
         "google.golang.org/grpc"
         "google.golang.org/grpc/credentials/insecure"
         "google.golang.org/grpc/keepalive"
@@ -594,20 +732,20 @@ type Client struct {
         client userpb.UpdateServiceClient
 }
 
-func NewClients(addrs []string) []*Client <span class="cov8" title="1">{
+func NewClients(addrs []string) ([]*Client, error) <span class="cov8" title="1">{
         clients := make([]*Client, 0, len(addrs))
         for _, addr := range addrs </span><span class="cov8" title="1">{
                 host, port, err := net.SplitHostPort(addr)
-                if err != nil || host == "" || port == "" </span><span class="cov0" title="0">{
-                        log.Fatalf("invalid peer address %q: %v", addr, err)
+                if err != nil || host == "" || port == "" </span><span class="cov8" title="1">{
+                        return nil, fmt.Errorf("invalid peer address %q: %v", addr, err)
                 }</span>
                 <span class="cov8" title="1">c, err := NewClient(addr)
                 if err != nil </span><span class="cov0" title="0">{
-                        log.Fatalf("failed to create client for %s: %v", addr, err)
+                        return nil, fmt.Errorf("failed to create client for %s: %w", addr, err)
                 }</span>
                 <span class="cov8" title="1">clients = append(clients, c)</span>
         }
-        <span class="cov8" title="1">return clients</span>
+        <span class="cov8" title="1">return clients, nil</span>
 }
 
 func NewClient(serverAddress string) (*Client, error) <span class="cov8" title="1">{
@@ -627,32 +765,32 @@ func NewClient(serverAddress string) (*Client, error) <span class="cov8" title="
 
 func (c *Client) Close() error <span class="cov8" title="1">{ return c.conn.Close() }</span>
 
-func (c *Client) Subscribe(ctx context.Context, getSnapshot func() []*userpb.SettingEntry, onUpdate func(*userpb.ServerStateUpdate)) <span class="cov8" title="1">{
+func (c *Client) Subscribe(ctx context.Context, getSnapshot func() types.Snapshot, onUpdate func(types.SettingEntry)) <span class="cov8" title="1">{
         for </span><span class="cov8" title="1">{
                 s := getSnapshot()
                 if err := c.runStream(ctx, s, onUpdate); err != nil </span><span class="cov8" title="1">{
                         if ctx.Err() != nil </span><span class="cov8" title="1">{
                                 return
                         }</span>
-                        <span class="cov8" title="1">log.Printf("stream broken, reconnecting: %v", err)
+                        <span class="cov0" title="0">log.Printf("stream broken, reconnecting: %v", err)
                         time.Sleep(3 * time.Second)</span>
                 }
         }
 }
 
-func (c *Client) sync(ctx context.Context, localState []*userpb.SettingEntry, onUpdate func(*userpb.ServerStateUpdate)) error <span class="cov8" title="1">{
-        resp, err := c.client.Sync(ctx, &amp;userpb.SyncRequest{LocalState: localState})
+func (c *Client) Sync(ctx context.Context, localSnapshot types.Snapshot, onUpdate func(types.SettingEntry)) error <span class="cov8" title="1">{
+        resp, err := c.client.Sync(ctx, &amp;userpb.SyncRequest{LocalState: SnapshotToProto(localSnapshot)})
         if err != nil </span><span class="cov8" title="1">{
                 return fmt.Errorf("sync failed: %w", err)
         }</span>
         <span class="cov8" title="1">for _, entry := range resp.NewerEntries </span><span class="cov8" title="1">{
-                onUpdate(&amp;userpb.ServerStateUpdate{Entry: entry})
+                onUpdate(FromProto(entry))
         }</span>
         <span class="cov8" title="1">return nil</span>
 }
 
-func (c *Client) runStream(ctx context.Context, localState []*userpb.SettingEntry, onUpdate func(*userpb.ServerStateUpdate)) error <span class="cov8" title="1">{
-        if err := c.sync(ctx, localState, onUpdate); err != nil </span><span class="cov8" title="1">{
+func (c *Client) runStream(ctx context.Context, localSnapshot types.Snapshot, onUpdate func(types.SettingEntry)) error <span class="cov8" title="1">{
+        if err := c.Sync(ctx, localSnapshot, onUpdate); err != nil </span><span class="cov8" title="1">{
                 return err
         }</span>
         <span class="cov8" title="1">stream, err := c.client.SubscribeStateUpdates(ctx, &amp;emptypb.Empty{})
@@ -664,12 +802,12 @@ func (c *Client) runStream(ctx context.Context, localState []*userpb.SettingEntr
                 if err != nil </span><span class="cov8" title="1">{
                         return err
                 }</span>
-                <span class="cov0" title="0">onUpdate(update)</span>
+                <span class="cov8" title="1">onUpdate(FromProto(update.Entry))</span>
         }
 }
 </pre>
 		
-		<pre class="file" id="file4" style="display: none">package network
+		<pre class="file" id="file5" style="display: none">package network
 
 import (
         "context"
@@ -797,7 +935,7 @@ func SnapshotToProto(s types.Snapshot) []*userpb.SettingEntry <span class="cov8"
 }
 </pre>
 		
-		<pre class="file" id="file5" style="display: none">package network
+		<pre class="file" id="file6" style="display: none">package network
 
 import (
         "context"
@@ -840,7 +978,7 @@ func StartRPCServer(ctx context.Context, us *UpdateServer, port uint16) error <s
 
         <span class="cov8" title="1">go func() </span><span class="cov8" title="1">{
                 if err := grpcServer.Serve(lis); err != nil &amp;&amp; err != grpc.ErrServerStopped </span><span class="cov0" title="0">{
-                        log.Fatalf("failed to serve: %v", err)
+                        log.Printf("gRPC server stopped unexpectedly: %v", err)
                 }</span>
         }()
 
@@ -848,12 +986,556 @@ func StartRPCServer(ctx context.Context, us *UpdateServer, port uint16) error <s
 }
 </pre>
 		
-		<pre class="file" id="file6" style="display: none">package types
+		<pre class="file" id="file7" style="display: none">// Code generated by protoc-gen-go. DO NOT EDIT.
+// versions:
+//         protoc-gen-go v1.36.11
+//         protoc        v7.34.1
+// source: internal/network/proto/update_state.proto
+
+package userpb
 
 import (
-        "encoding/json"
+        protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+        protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+        emptypb "google.golang.org/protobuf/types/known/emptypb"
+        reflect "reflect"
+        sync "sync"
+        unsafe "unsafe"
+)
+
+const (
+        // Verify that this generated code is sufficiently up-to-date.
+        _ = protoimpl.EnforceVersion(20 - protoimpl.MinVersion)
+        // Verify that runtime/protoimpl is sufficiently up-to-date.
+        _ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
+)
+
+type HLC struct {
+        state         protoimpl.MessageState `protogen:"open.v1"`
+        WallTime      int64                  `protobuf:"varint,1,opt,name=wall_time,json=wallTime,proto3" json:"wall_time,omitempty"`
+        Logical       uint32                 `protobuf:"varint,2,opt,name=logical,proto3" json:"logical,omitempty"`
+        NodeId        string                 `protobuf:"bytes,3,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+        unknownFields protoimpl.UnknownFields
+        sizeCache     protoimpl.SizeCache
+}
+
+func (x *HLC) Reset() <span class="cov0" title="0">{
+        *x = HLC{}
+        mi := &amp;file_internal_network_proto_update_state_proto_msgTypes[0]
+        ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+        ms.StoreMessageInfo(mi)
+}</span>
+
+func (x *HLC) String() string <span class="cov0" title="0">{
+        return protoimpl.X.MessageStringOf(x)
+}</span>
+
+func (*HLC) ProtoMessage() {<span class="cov0" title="0">}</span>
+
+func (x *HLC) ProtoReflect() protoreflect.Message <span class="cov0" title="0">{
+        mi := &amp;file_internal_network_proto_update_state_proto_msgTypes[0]
+        if x != nil </span><span class="cov0" title="0">{
+                ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+                if ms.LoadMessageInfo() == nil </span><span class="cov0" title="0">{
+                        ms.StoreMessageInfo(mi)
+                }</span>
+                <span class="cov0" title="0">return ms</span>
+        }
+        <span class="cov0" title="0">return mi.MessageOf(x)</span>
+}
+
+// Deprecated: Use HLC.ProtoReflect.Descriptor instead.
+func (*HLC) Descriptor() ([]byte, []int) <span class="cov0" title="0">{
+        return file_internal_network_proto_update_state_proto_rawDescGZIP(), []int{0}
+}</span>
+
+func (x *HLC) GetWallTime() int64 <span class="cov0" title="0">{
+        if x != nil </span><span class="cov0" title="0">{
+                return x.WallTime
+        }</span>
+        <span class="cov0" title="0">return 0</span>
+}
+
+func (x *HLC) GetLogical() uint32 <span class="cov0" title="0">{
+        if x != nil </span><span class="cov0" title="0">{
+                return x.Logical
+        }</span>
+        <span class="cov0" title="0">return 0</span>
+}
+
+func (x *HLC) GetNodeId() string <span class="cov0" title="0">{
+        if x != nil </span><span class="cov0" title="0">{
+                return x.NodeId
+        }</span>
+        <span class="cov0" title="0">return ""</span>
+}
+
+type SettingEntry struct {
+        state         protoimpl.MessageState `protogen:"open.v1"`
+        Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+        Value         string                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+        Clock         *HLC                   `protobuf:"bytes,3,opt,name=clock,proto3" json:"clock,omitempty"`
+        Deleted       bool                   `protobuf:"varint,4,opt,name=deleted,proto3" json:"deleted,omitempty"` // tombstone
+        unknownFields protoimpl.UnknownFields
+        sizeCache     protoimpl.SizeCache
+}
+
+func (x *SettingEntry) Reset() <span class="cov0" title="0">{
+        *x = SettingEntry{}
+        mi := &amp;file_internal_network_proto_update_state_proto_msgTypes[1]
+        ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+        ms.StoreMessageInfo(mi)
+}</span>
+
+func (x *SettingEntry) String() string <span class="cov0" title="0">{
+        return protoimpl.X.MessageStringOf(x)
+}</span>
+
+func (*SettingEntry) ProtoMessage() {<span class="cov0" title="0">}</span>
+
+func (x *SettingEntry) ProtoReflect() protoreflect.Message <span class="cov0" title="0">{
+        mi := &amp;file_internal_network_proto_update_state_proto_msgTypes[1]
+        if x != nil </span><span class="cov0" title="0">{
+                ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+                if ms.LoadMessageInfo() == nil </span><span class="cov0" title="0">{
+                        ms.StoreMessageInfo(mi)
+                }</span>
+                <span class="cov0" title="0">return ms</span>
+        }
+        <span class="cov0" title="0">return mi.MessageOf(x)</span>
+}
+
+// Deprecated: Use SettingEntry.ProtoReflect.Descriptor instead.
+func (*SettingEntry) Descriptor() ([]byte, []int) <span class="cov0" title="0">{
+        return file_internal_network_proto_update_state_proto_rawDescGZIP(), []int{1}
+}</span>
+
+func (x *SettingEntry) GetKey() string <span class="cov0" title="0">{
+        if x != nil </span><span class="cov0" title="0">{
+                return x.Key
+        }</span>
+        <span class="cov0" title="0">return ""</span>
+}
+
+func (x *SettingEntry) GetValue() string <span class="cov0" title="0">{
+        if x != nil </span><span class="cov0" title="0">{
+                return x.Value
+        }</span>
+        <span class="cov0" title="0">return ""</span>
+}
+
+func (x *SettingEntry) GetClock() *HLC <span class="cov0" title="0">{
+        if x != nil </span><span class="cov0" title="0">{
+                return x.Clock
+        }</span>
+        <span class="cov0" title="0">return nil</span>
+}
+
+func (x *SettingEntry) GetDeleted() bool <span class="cov0" title="0">{
+        if x != nil </span><span class="cov0" title="0">{
+                return x.Deleted
+        }</span>
+        <span class="cov0" title="0">return false</span>
+}
+
+type ServerStateUpdate struct {
+        state         protoimpl.MessageState `protogen:"open.v1"`
+        Entry         *SettingEntry          `protobuf:"bytes,1,opt,name=entry,proto3" json:"entry,omitempty"`
+        unknownFields protoimpl.UnknownFields
+        sizeCache     protoimpl.SizeCache
+}
+
+func (x *ServerStateUpdate) Reset() <span class="cov0" title="0">{
+        *x = ServerStateUpdate{}
+        mi := &amp;file_internal_network_proto_update_state_proto_msgTypes[2]
+        ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+        ms.StoreMessageInfo(mi)
+}</span>
+
+func (x *ServerStateUpdate) String() string <span class="cov0" title="0">{
+        return protoimpl.X.MessageStringOf(x)
+}</span>
+
+func (*ServerStateUpdate) ProtoMessage() {<span class="cov0" title="0">}</span>
+
+func (x *ServerStateUpdate) ProtoReflect() protoreflect.Message <span class="cov0" title="0">{
+        mi := &amp;file_internal_network_proto_update_state_proto_msgTypes[2]
+        if x != nil </span><span class="cov0" title="0">{
+                ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+                if ms.LoadMessageInfo() == nil </span><span class="cov0" title="0">{
+                        ms.StoreMessageInfo(mi)
+                }</span>
+                <span class="cov0" title="0">return ms</span>
+        }
+        <span class="cov0" title="0">return mi.MessageOf(x)</span>
+}
+
+// Deprecated: Use ServerStateUpdate.ProtoReflect.Descriptor instead.
+func (*ServerStateUpdate) Descriptor() ([]byte, []int) <span class="cov0" title="0">{
+        return file_internal_network_proto_update_state_proto_rawDescGZIP(), []int{2}
+}</span>
+
+func (x *ServerStateUpdate) GetEntry() *SettingEntry <span class="cov0" title="0">{
+        if x != nil </span><span class="cov0" title="0">{
+                return x.Entry
+        }</span>
+        <span class="cov0" title="0">return nil</span>
+}
+
+type SyncRequest struct {
+        state         protoimpl.MessageState `protogen:"open.v1"`
+        LocalState    []*SettingEntry        `protobuf:"bytes,1,rep,name=local_state,json=localState,proto3" json:"local_state,omitempty"`
+        unknownFields protoimpl.UnknownFields
+        sizeCache     protoimpl.SizeCache
+}
+
+func (x *SyncRequest) Reset() <span class="cov0" title="0">{
+        *x = SyncRequest{}
+        mi := &amp;file_internal_network_proto_update_state_proto_msgTypes[3]
+        ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+        ms.StoreMessageInfo(mi)
+}</span>
+
+func (x *SyncRequest) String() string <span class="cov0" title="0">{
+        return protoimpl.X.MessageStringOf(x)
+}</span>
+
+func (*SyncRequest) ProtoMessage() {<span class="cov0" title="0">}</span>
+
+func (x *SyncRequest) ProtoReflect() protoreflect.Message <span class="cov0" title="0">{
+        mi := &amp;file_internal_network_proto_update_state_proto_msgTypes[3]
+        if x != nil </span><span class="cov0" title="0">{
+                ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+                if ms.LoadMessageInfo() == nil </span><span class="cov0" title="0">{
+                        ms.StoreMessageInfo(mi)
+                }</span>
+                <span class="cov0" title="0">return ms</span>
+        }
+        <span class="cov0" title="0">return mi.MessageOf(x)</span>
+}
+
+// Deprecated: Use SyncRequest.ProtoReflect.Descriptor instead.
+func (*SyncRequest) Descriptor() ([]byte, []int) <span class="cov0" title="0">{
+        return file_internal_network_proto_update_state_proto_rawDescGZIP(), []int{3}
+}</span>
+
+func (x *SyncRequest) GetLocalState() []*SettingEntry <span class="cov0" title="0">{
+        if x != nil </span><span class="cov0" title="0">{
+                return x.LocalState
+        }</span>
+        <span class="cov0" title="0">return nil</span>
+}
+
+type SyncResponse struct {
+        state         protoimpl.MessageState `protogen:"open.v1"`
+        NewerEntries  []*SettingEntry        `protobuf:"bytes,1,rep,name=newer_entries,json=newerEntries,proto3" json:"newer_entries,omitempty"`
+        unknownFields protoimpl.UnknownFields
+        sizeCache     protoimpl.SizeCache
+}
+
+func (x *SyncResponse) Reset() <span class="cov0" title="0">{
+        *x = SyncResponse{}
+        mi := &amp;file_internal_network_proto_update_state_proto_msgTypes[4]
+        ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+        ms.StoreMessageInfo(mi)
+}</span>
+
+func (x *SyncResponse) String() string <span class="cov0" title="0">{
+        return protoimpl.X.MessageStringOf(x)
+}</span>
+
+func (*SyncResponse) ProtoMessage() {<span class="cov0" title="0">}</span>
+
+func (x *SyncResponse) ProtoReflect() protoreflect.Message <span class="cov0" title="0">{
+        mi := &amp;file_internal_network_proto_update_state_proto_msgTypes[4]
+        if x != nil </span><span class="cov0" title="0">{
+                ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+                if ms.LoadMessageInfo() == nil </span><span class="cov0" title="0">{
+                        ms.StoreMessageInfo(mi)
+                }</span>
+                <span class="cov0" title="0">return ms</span>
+        }
+        <span class="cov0" title="0">return mi.MessageOf(x)</span>
+}
+
+// Deprecated: Use SyncResponse.ProtoReflect.Descriptor instead.
+func (*SyncResponse) Descriptor() ([]byte, []int) <span class="cov0" title="0">{
+        return file_internal_network_proto_update_state_proto_rawDescGZIP(), []int{4}
+}</span>
+
+func (x *SyncResponse) GetNewerEntries() []*SettingEntry <span class="cov0" title="0">{
+        if x != nil </span><span class="cov0" title="0">{
+                return x.NewerEntries
+        }</span>
+        <span class="cov0" title="0">return nil</span>
+}
+
+var File_internal_network_proto_update_state_proto protoreflect.FileDescriptor
+
+const file_internal_network_proto_update_state_proto_rawDesc = "" +
+        "\n" +
+        ")internal/network/proto/update_state.proto\x1a\x1bgoogle/protobuf/empty.proto\"U\n" +
+        "\x03HLC\x12\x1b\n" +
+        "\twall_time\x18\x01 \x01(\x03R\bwallTime\x12\x18\n" +
+        "\alogical\x18\x02 \x01(\rR\alogical\x12\x17\n" +
+        "\anode_id\x18\x03 \x01(\tR\x06nodeId\"l\n" +
+        "\fSettingEntry\x12\x10\n" +
+        "\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+        "\x05value\x18\x02 \x01(\tR\x05value\x12\x1a\n" +
+        "\x05clock\x18\x03 \x01(\v2\x04.HLCR\x05clock\x12\x18\n" +
+        "\adeleted\x18\x04 \x01(\bR\adeleted\"8\n" +
+        "\x11ServerStateUpdate\x12#\n" +
+        "\x05entry\x18\x01 \x01(\v2\r.SettingEntryR\x05entry\"=\n" +
+        "\vSyncRequest\x12.\n" +
+        "\vlocal_state\x18\x01 \x03(\v2\r.SettingEntryR\n" +
+        "localState\"B\n" +
+        "\fSyncResponse\x122\n" +
+        "\rnewer_entries\x18\x01 \x03(\v2\r.SettingEntryR\fnewerEntries2{\n" +
+        "\rUpdateService\x12E\n" +
+        "\x15SubscribeStateUpdates\x12\x16.google.protobuf.Empty\x1a\x12.ServerStateUpdate0\x01\x12#\n" +
+        "\x04Sync\x12\f.SyncRequest\x1a\r.SyncResponseB\n" +
+        "Z\b./userpbb\x06proto3"
+
+var (
+        file_internal_network_proto_update_state_proto_rawDescOnce sync.Once
+        file_internal_network_proto_update_state_proto_rawDescData []byte
+)
+
+func file_internal_network_proto_update_state_proto_rawDescGZIP() []byte <span class="cov0" title="0">{
+        file_internal_network_proto_update_state_proto_rawDescOnce.Do(func() </span><span class="cov0" title="0">{
+                file_internal_network_proto_update_state_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_internal_network_proto_update_state_proto_rawDesc), len(file_internal_network_proto_update_state_proto_rawDesc)))
+        }</span>)
+        <span class="cov0" title="0">return file_internal_network_proto_update_state_proto_rawDescData</span>
+}
+
+var file_internal_network_proto_update_state_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_internal_network_proto_update_state_proto_goTypes = []any{
+        (*HLC)(nil),               // 0: HLC
+        (*SettingEntry)(nil),      // 1: SettingEntry
+        (*ServerStateUpdate)(nil), // 2: ServerStateUpdate
+        (*SyncRequest)(nil),       // 3: SyncRequest
+        (*SyncResponse)(nil),      // 4: SyncResponse
+        (*emptypb.Empty)(nil),     // 5: google.protobuf.Empty
+}
+var file_internal_network_proto_update_state_proto_depIdxs = []int32{
+        0, // 0: SettingEntry.clock:type_name -&gt; HLC
+        1, // 1: ServerStateUpdate.entry:type_name -&gt; SettingEntry
+        1, // 2: SyncRequest.local_state:type_name -&gt; SettingEntry
+        1, // 3: SyncResponse.newer_entries:type_name -&gt; SettingEntry
+        5, // 4: UpdateService.SubscribeStateUpdates:input_type -&gt; google.protobuf.Empty
+        3, // 5: UpdateService.Sync:input_type -&gt; SyncRequest
+        2, // 6: UpdateService.SubscribeStateUpdates:output_type -&gt; ServerStateUpdate
+        4, // 7: UpdateService.Sync:output_type -&gt; SyncResponse
+        6, // [6:8] is the sub-list for method output_type
+        4, // [4:6] is the sub-list for method input_type
+        4, // [4:4] is the sub-list for extension type_name
+        4, // [4:4] is the sub-list for extension extendee
+        0, // [0:4] is the sub-list for field type_name
+}
+
+func init() <span class="cov0" title="0">{ file_internal_network_proto_update_state_proto_init() }</span>
+func file_internal_network_proto_update_state_proto_init() <span class="cov0" title="0">{
+        if File_internal_network_proto_update_state_proto != nil </span><span class="cov0" title="0">{
+                return
+        }</span>
+        <span class="cov0" title="0">type x struct{}
+        out := protoimpl.TypeBuilder{
+                File: protoimpl.DescBuilder{
+                        GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
+                        RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_network_proto_update_state_proto_rawDesc), len(file_internal_network_proto_update_state_proto_rawDesc)),
+                        NumEnums:      0,
+                        NumMessages:   5,
+                        NumExtensions: 0,
+                        NumServices:   1,
+                },
+                GoTypes:           file_internal_network_proto_update_state_proto_goTypes,
+                DependencyIndexes: file_internal_network_proto_update_state_proto_depIdxs,
+                MessageInfos:      file_internal_network_proto_update_state_proto_msgTypes,
+        }.Build()
+        File_internal_network_proto_update_state_proto = out.File
+        file_internal_network_proto_update_state_proto_goTypes = nil
+        file_internal_network_proto_update_state_proto_depIdxs = nil</span>
+}
+</pre>
+		
+		<pre class="file" id="file8" style="display: none">// Code generated by protoc-gen-go-grpc. DO NOT EDIT.
+// versions:
+// - protoc-gen-go-grpc v1.6.1
+// - protoc             v7.34.1
+// source: internal/network/proto/update_state.proto
+
+package userpb
+
+import (
+        context "context"
+        grpc "google.golang.org/grpc"
+        codes "google.golang.org/grpc/codes"
+        status "google.golang.org/grpc/status"
+        emptypb "google.golang.org/protobuf/types/known/emptypb"
+)
+
+// This is a compile-time assertion to ensure that this generated file
+// is compatible with the grpc package it is being compiled against.
+// Requires gRPC-Go v1.64.0 or later.
+const _ = grpc.SupportPackageIsVersion9
+
+const (
+        UpdateService_SubscribeStateUpdates_FullMethodName = "/UpdateService/SubscribeStateUpdates"
+        UpdateService_Sync_FullMethodName                  = "/UpdateService/Sync"
+)
+
+// UpdateServiceClient is the client API for UpdateService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// UpdateService handles server state updates and broadcasts them to connected clients.
+type UpdateServiceClient interface {
+        // Subscribe to rpc server for reciving updates
+        SubscribeStateUpdates(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ServerStateUpdate], error)
+        // Sync server settings
+        Sync(ctx context.Context, in *SyncRequest, opts ...grpc.CallOption) (*SyncResponse, error)
+}
+
+type updateServiceClient struct {
+        cc grpc.ClientConnInterface
+}
+
+func NewUpdateServiceClient(cc grpc.ClientConnInterface) UpdateServiceClient <span class="cov0" title="0">{
+        return &amp;updateServiceClient{cc}
+}</span>
+
+func (c *updateServiceClient) SubscribeStateUpdates(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ServerStateUpdate], error) <span class="cov0" title="0">{
+        cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+        stream, err := c.cc.NewStream(ctx, &amp;UpdateService_ServiceDesc.Streams[0], UpdateService_SubscribeStateUpdates_FullMethodName, cOpts...)
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, err
+        }</span>
+        <span class="cov0" title="0">x := &amp;grpc.GenericClientStream[emptypb.Empty, ServerStateUpdate]{ClientStream: stream}
+        if err := x.ClientStream.SendMsg(in); err != nil </span><span class="cov0" title="0">{
+                return nil, err
+        }</span>
+        <span class="cov0" title="0">if err := x.ClientStream.CloseSend(); err != nil </span><span class="cov0" title="0">{
+                return nil, err
+        }</span>
+        <span class="cov0" title="0">return x, nil</span>
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type UpdateService_SubscribeStateUpdatesClient = grpc.ServerStreamingClient[ServerStateUpdate]
+
+func (c *updateServiceClient) Sync(ctx context.Context, in *SyncRequest, opts ...grpc.CallOption) (*SyncResponse, error) <span class="cov0" title="0">{
+        cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+        out := new(SyncResponse)
+        err := c.cc.Invoke(ctx, UpdateService_Sync_FullMethodName, in, out, cOpts...)
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, err
+        }</span>
+        <span class="cov0" title="0">return out, nil</span>
+}
+
+// UpdateServiceServer is the server API for UpdateService service.
+// All implementations must embed UnimplementedUpdateServiceServer
+// for forward compatibility.
+//
+// UpdateService handles server state updates and broadcasts them to connected clients.
+type UpdateServiceServer interface {
+        // Subscribe to rpc server for reciving updates
+        SubscribeStateUpdates(*emptypb.Empty, grpc.ServerStreamingServer[ServerStateUpdate]) error
+        // Sync server settings
+        Sync(context.Context, *SyncRequest) (*SyncResponse, error)
+        mustEmbedUnimplementedUpdateServiceServer()
+}
+
+// UnimplementedUpdateServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedUpdateServiceServer struct{}
+
+func (UnimplementedUpdateServiceServer) SubscribeStateUpdates(*emptypb.Empty, grpc.ServerStreamingServer[ServerStateUpdate]) error <span class="cov0" title="0">{
+        return status.Error(codes.Unimplemented, "method SubscribeStateUpdates not implemented")
+}</span>
+func (UnimplementedUpdateServiceServer) Sync(context.Context, *SyncRequest) (*SyncResponse, error) <span class="cov0" title="0">{
+        return nil, status.Error(codes.Unimplemented, "method Sync not implemented")
+}</span>
+func (UnimplementedUpdateServiceServer) mustEmbedUnimplementedUpdateServiceServer() {<span class="cov0" title="0">}</span>
+func (UnimplementedUpdateServiceServer) testEmbeddedByValue()                       {<span class="cov0" title="0">}</span>
+
+// UnsafeUpdateServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to UpdateServiceServer will
+// result in compilation errors.
+type UnsafeUpdateServiceServer interface {
+        mustEmbedUnimplementedUpdateServiceServer()
+}
+
+func RegisterUpdateServiceServer(s grpc.ServiceRegistrar, srv UpdateServiceServer) <span class="cov0" title="0">{
+        // If the following call panics, it indicates UnimplementedUpdateServiceServer was
+        // embedded by pointer and is nil.  This will cause panics if an
+        // unimplemented method is ever invoked, so we test this at initialization
+        // time to prevent it from happening at runtime later due to I/O.
+        if t, ok := srv.(interface{ testEmbeddedByValue() }); ok </span><span class="cov0" title="0">{
+                t.testEmbeddedByValue()
+        }</span>
+        <span class="cov0" title="0">s.RegisterService(&amp;UpdateService_ServiceDesc, srv)</span>
+}
+
+func _UpdateService_SubscribeStateUpdates_Handler(srv interface{}, stream grpc.ServerStream) error <span class="cov0" title="0">{
+        m := new(emptypb.Empty)
+        if err := stream.RecvMsg(m); err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov0" title="0">return srv.(UpdateServiceServer).SubscribeStateUpdates(m, &amp;grpc.GenericServerStream[emptypb.Empty, ServerStateUpdate]{ServerStream: stream})</span>
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type UpdateService_SubscribeStateUpdatesServer = grpc.ServerStreamingServer[ServerStateUpdate]
+
+func _UpdateService_Sync_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) <span class="cov0" title="0">{
+        in := new(SyncRequest)
+        if err := dec(in); err != nil </span><span class="cov0" title="0">{
+                return nil, err
+        }</span>
+        <span class="cov0" title="0">if interceptor == nil </span><span class="cov0" title="0">{
+                return srv.(UpdateServiceServer).Sync(ctx, in)
+        }</span>
+        <span class="cov0" title="0">info := &amp;grpc.UnaryServerInfo{
+                Server:     srv,
+                FullMethod: UpdateService_Sync_FullMethodName,
+        }
+        handler := func(ctx context.Context, req interface{}) (interface{}, error) </span><span class="cov0" title="0">{
+                return srv.(UpdateServiceServer).Sync(ctx, req.(*SyncRequest))
+        }</span>
+        <span class="cov0" title="0">return interceptor(ctx, in, info, handler)</span>
+}
+
+// UpdateService_ServiceDesc is the grpc.ServiceDesc for UpdateService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var UpdateService_ServiceDesc = grpc.ServiceDesc{
+        ServiceName: "UpdateService",
+        HandlerType: (*UpdateServiceServer)(nil),
+        Methods: []grpc.MethodDesc{
+                {
+                        MethodName: "Sync",
+                        Handler:    _UpdateService_Sync_Handler,
+                },
+        },
+        Streams: []grpc.StreamDesc{
+                {
+                        StreamName:    "SubscribeStateUpdates",
+                        Handler:       _UpdateService_SubscribeStateUpdates_Handler,
+                        ServerStreams: true,
+                },
+        },
+        Metadata: "internal/network/proto/update_state.proto",
+}
+</pre>
+		
+		<pre class="file" id="file9" style="display: none">package types
+
+import (
         "fmt"
-        "os"
         "time"
 )
 
@@ -978,27 +1660,71 @@ type SettingEntry struct {
 type Snapshot struct {
         Entries map[string]SettingEntry
 }
+</pre>
+		
+		<pre class="file" id="file10" style="display: none">package main
 
-type Config struct {
-        PeerAddresses []string
-        SettingsPath  string
-        CRDTWorkdir   string
-        GRPCPort      uint16
-}
+import (
+        "context"
+        "flag"
+        "fmt"
+        "log"
+        "os"
+        "os/signal"
 
-func LoadConfig(configPath string) (Config, error) <span class="cov8" title="1">{
-        data, err := os.ReadFile(configPath)
+        "github.com/gdr00/distributed-server-update/internal/controller"
+)
 
-        if err != nil </span><span class="cov8" title="1">{
-                return Config{}, fmt.Errorf("failed to read config file: %w", err)
+func main() <span class="cov0" title="0">{
+
+        initCmd := flag.NewFlagSet("init", flag.ExitOnError)
+        initConfig := initCmd.String("config", "", "path to config file")
+        initEmpty := initCmd.Bool("empty", false, "init empty replica")
+
+        startConfig := flag.String("config", "", "path to config file")
+
+        if len(os.Args) &gt; 1 &amp;&amp; os.Args[1] == "init" </span><span class="cov0" title="0">{
+                initCmd.Parse(os.Args[2:])
+                cfg, err := controller.LoadConfig(*initConfig)
+                if err != nil </span><span class="cov0" title="0">{
+                        log.Fatal(err)
+                }</span>
+                <span class="cov0" title="0">if *initEmpty </span><span class="cov0" title="0">{
+                        // just create node_id and empty crdt_state.json
+                        if err := controller.InitEmptyNode(cfg); err != nil </span><span class="cov0" title="0">{
+                                log.Fatal(err)
+                        }</span>
+                } else<span class="cov0" title="0"> {
+                        if err := controller.InitNode(cfg); err != nil </span><span class="cov0" title="0">{
+                                log.Fatal(err)
+                        }</span>
+                }
+                <span class="cov0" title="0">return</span>
+        }
+
+        <span class="cov0" title="0">flag.Parse()
+        if *startConfig == "" </span><span class="cov0" title="0">{
+                fmt.Fprintf(os.Stderr, "Usage: %s --config=&lt;path&gt;\n", os.Args[0])
+                flag.PrintDefaults()
+                os.Exit(1)
+        }</span>
+        <span class="cov0" title="0">cfg, err := controller.LoadConfig(*startConfig)
+        if err != nil </span><span class="cov0" title="0">{
+                log.Fatal(err)
         }</span>
 
-        <span class="cov8" title="1">var cfg Config
-        if err := json.Unmarshal(data, &amp;cfg); err != nil </span><span class="cov8" title="1">{
-                return Config{}, fmt.Errorf("failed to parse config file: %w", err)
+        <span class="cov0" title="0">ctrl, err := controller.New(cfg)
+        if err != nil </span><span class="cov0" title="0">{
+                log.Fatal(err)
         }</span>
 
-        <span class="cov8" title="1">return cfg, nil</span>
+        <span class="cov0" title="0">ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+        defer cancel()
+
+        if err := ctrl.Run(ctx); err != nil </span><span class="cov0" title="0">{
+                log.Fatal(err)
+        }</span>
+
 }
 </pre>
 		

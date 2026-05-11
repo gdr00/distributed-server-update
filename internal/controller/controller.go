@@ -17,15 +17,17 @@ import (
 )
 
 type Controller struct {
-	cfg          types.Config
-	crdt         *crdt.CRDT
-	network      *network.UpdateServer
-	clients      []*network.Client
-	logic        *logic.Logic
-	tombstoneTTL int64
+	cfg                 Config
+	crdt                *crdt.CRDT
+	network             *network.UpdateServer
+	clients             []*network.Client
+	logic               *logic.Logic
+	tombstoneTTL        int64
+	antiEntropyInterval time.Duration
+	gcInterval          time.Duration
 }
 
-func New(cfg types.Config) (*Controller, error) {
+func New(cfg Config) (*Controller, error) {
 	c, err := crdt.New(cfg.CRDTWorkdir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load crdt: %w", err)
@@ -35,11 +37,13 @@ func New(cfg types.Config) (*Controller, error) {
 		return nil, fmt.Errorf("failed to create peer clients: %w", err)
 	}
 	ctrl := &Controller{
-		cfg:          cfg,
-		crdt:         c,
-		clients:      clients,
-		logic:        logic.New(cfg.SettingsPath),
-		tombstoneTTL: int64(2 * 7 * 24 * time.Hour),
+		cfg:                 cfg,
+		crdt:                c,
+		clients:             clients,
+		logic:               logic.New(cfg.SettingsPath),
+		tombstoneTTL:        int64(2 * 7 * 24 * time.Hour),
+		antiEntropyInterval: 60 * time.Second,
+		gcInterval:          24 * time.Hour,
 	}
 	ctrl.network = network.NewUpdateServer(func() types.Snapshot {
 		return ctrl.crdt.Snapshot()
@@ -48,7 +52,7 @@ func New(cfg types.Config) (*Controller, error) {
 }
 
 // Init node with the "master" configuration when new system is initialized
-func InitNode(c types.Config) error {
+func InitNode(c Config) error {
 	entries, err := logic.New(c.SettingsPath).Read()
 	if err != nil {
 		return fmt.Errorf("failed to read settings: %w", err)
@@ -60,7 +64,7 @@ func InitNode(c types.Config) error {
 }
 
 // Init node to sync from others on the network
-func InitEmptyNode(cfg types.Config) error {
+func InitEmptyNode(cfg Config) error {
 	if err := os.MkdirAll(cfg.CRDTWorkdir, 0700); err != nil {
 		return fmt.Errorf("failed to create config dir: %w", err)
 	}
@@ -137,7 +141,7 @@ func (ctrl *Controller) Run(ctx context.Context) error {
 }
 
 func (ctrl *Controller) runAntiEntropy(ctx context.Context) {
-	ticker := time.NewTicker(60 * time.Second)
+	ticker := time.NewTicker(ctrl.antiEntropyInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -159,7 +163,7 @@ func (ctrl *Controller) syncAllPeers(ctx context.Context) {
 }
 
 func (ctrl *Controller) runTombstoneGC(ctx context.Context) {
-	ticker := time.NewTicker(24 * time.Hour)
+	ticker := time.NewTicker(ctrl.gcInterval)
 	defer ticker.Stop()
 	for {
 		select {

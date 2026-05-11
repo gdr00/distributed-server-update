@@ -329,7 +329,7 @@ func TestInit_CreatesNestedDir(t *testing.T) {
 	}
 }
 
-func TestRun_RemoteFutureClockAccepted(t *testing.T) {
+func TestRun_RemoteFutureClockRejected(t *testing.T) {
 	c, _ := setupCRDT(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -347,11 +347,9 @@ func TestRun_RemoteFutureClockAccepted(t *testing.T) {
 
 	select {
 	case e := <-fileSync:
-		if e.Key != "theme" || e.Value != "dark" {
-			t.Fatalf("unexpected entry: %+v", e)
-		}
+		t.Fatalf("skewed entry should have been dropped, got: %+v", e)
 	case <-time.After(500 * time.Millisecond):
-		t.Fatal("future-clock entry was dropped instead of accepted")
+		// expected: skewed remote entry rejected
 	}
 }
 
@@ -457,5 +455,120 @@ func TestSnapshot_IsCopy(t *testing.T) {
 	result := c.Get("theme")
 	if result.Value == "mutated" {
 		t.Fatal("snapshot mutation affected internal state")
+	}
+}
+
+// purgeTombstones tests
+
+func TestPurgeTombstones_RemovesOldTombstone(t *testing.T) {
+	c, _ := setupCRDT(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+
+	// inject tombstone with old walltime directly into state via merge
+	c.state["dead"] = types.SettingEntry{
+		Key:     "dead",
+		Value:   "",
+		Deleted: true,
+		Clock:   types.HLC{WallTime: 1, NodeID: "n"},
+	}
+
+	// ttl=0 → diff = time.Now(), which is > WallTime(1) → should purge
+	c.PurgeTombstones(0)
+	time.Sleep(100 * time.Millisecond)
+
+	if _, ok := c.state["dead"]; ok {
+		t.Fatal("expected tombstone to be purged")
+	}
+}
+
+func TestPurgeTombstones_KeepsRecentTombstone(t *testing.T) {
+	c, _ := setupCRDT(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+
+	future := time.Now().UnixNano() + int64(time.Hour)
+	c.state["recent"] = types.SettingEntry{
+		Key:     "recent",
+		Deleted: true,
+		Clock:   types.HLC{WallTime: future, NodeID: "n"},
+	}
+
+	// ttl=0 → diff = time.Now(), which is < future → should not purge
+	c.PurgeTombstones(0)
+	time.Sleep(100 * time.Millisecond)
+
+	if _, ok := c.state["recent"]; !ok {
+		t.Fatal("recent tombstone should not be purged")
+	}
+}
+
+func TestPurgeTombstones_KeepsNonDeletedEntry(t *testing.T) {
+	c, _ := setupCRDT(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+
+	c.state["live"] = types.SettingEntry{
+		Key:     "live",
+		Value:   "x",
+		Deleted: false,
+		Clock:   types.HLC{WallTime: 1, NodeID: "n"},
+	}
+
+	c.PurgeTombstones(0)
+	time.Sleep(100 * time.Millisecond)
+
+	if _, ok := c.state["live"]; !ok {
+		t.Fatal("non-deleted entry should not be purged")
+	}
+}
+
+func TestPurgeTombstones_EmptyStateIsNoop(t *testing.T) {
+	c, _ := setupCRDT(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+
+	c.PurgeTombstones(0)
+	time.Sleep(100 * time.Millisecond) // no panic
+}
+
+func TestPurgeTombstones_PersistsStateAfterPurge(t *testing.T) {
+	c, dir := setupCRDT(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+
+	c.state["dead"] = types.SettingEntry{
+		Key:     "dead",
+		Deleted: true,
+		Clock:   types.HLC{WallTime: 1, NodeID: "n"},
+	}
+	c.state["live"] = types.SettingEntry{
+		Key:     "live",
+		Value:   "keep",
+		Deleted: false,
+		Clock:   types.HLC{WallTime: 2, NodeID: "n"},
+	}
+
+	c.PurgeTombstones(0)
+	time.Sleep(100 * time.Millisecond)
+
+	data, err := os.ReadFile(filepath.Join(dir, "crdt_state.json"))
+	if err != nil {
+		t.Fatalf("failed to read state: %v", err)
+	}
+	var state map[string]types.SettingEntry
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatalf("failed to parse state: %v", err)
+	}
+	if _, ok := state["dead"]; ok {
+		t.Fatal("dead entry should not be in persisted state")
+	}
+	if state["live"].Value != "keep" {
+		t.Fatalf("live entry missing or wrong in persisted state")
 	}
 }

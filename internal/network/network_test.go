@@ -419,6 +419,41 @@ func TestClient_RunStream(t *testing.T) {
 	c.runStream(ctx, types.Snapshot{}, func(types.SettingEntry) {})
 }
 
+func TestClient_RunStream_ReceivesStreamMessage(t *testing.T) {
+	srv, lis := startTestServerWithLis(t, nil)
+	c := newBufconnClient(t, lis)
+	defer c.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	received := make(chan types.SettingEntry, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- c.runStream(ctx, types.Snapshot{}, func(e types.SettingEntry) {
+			received <- e
+		})
+	}()
+
+	time.Sleep(50 * time.Millisecond) // let stream establish
+
+	srv.Broadcast(&userpb.ServerStateUpdate{
+		Entry: ToProto(entry("theme", "dark", hlc(100, 0, "A"))),
+	})
+
+	select {
+	case e := <-received:
+		if e.Key != "theme" || e.Value != "dark" {
+			t.Fatalf("unexpected entry: %+v", e)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for stream message")
+	}
+
+	cancel()
+	<-done
+}
+
 func TestClient_RunStream_SyncError(t *testing.T) {
 	_, lis := startTestServerWithLis(t, nil)
 	c := newBufconnClient(t, lis)

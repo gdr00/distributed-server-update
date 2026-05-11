@@ -3,12 +3,16 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/gdr00/distributed-server-update/internal/network"
+	"github.com/gdr00/distributed-server-update/internal/network/userpb"
 	"github.com/gdr00/distributed-server-update/internal/types"
+	"google.golang.org/grpc"
 )
 
 // helpers
@@ -18,7 +22,7 @@ func setupWorkDir(t *testing.T, settings types.Settings) (string, string) {
 	workDir := t.TempDir()
 	settingsDir := t.TempDir()
 	settingsPath := filepath.Join(settingsDir, "settings.json")
-	cfg := types.Config{SettingsPath: settingsPath, CRDTWorkdir: workDir}
+	cfg := Config{SettingsPath: settingsPath, CRDTWorkdir: workDir}
 
 	// write settings file
 	data, _ := json.MarshalIndent(settings, "", "  ")
@@ -36,7 +40,7 @@ func setupWorkDir(t *testing.T, settings types.Settings) (string, string) {
 
 func newTestController(t *testing.T, workDir string, settingsPath string, port uint16, peers []string) *Controller {
 	t.Helper()
-	cfg := types.Config{
+	cfg := Config{
 		CRDTWorkdir:   workDir,
 		SettingsPath:  settingsPath,
 		GRPCPort:      port,
@@ -55,7 +59,7 @@ func TestInitNode_CreatesNodeIDAndState(t *testing.T) {
 	workDir := t.TempDir()
 	settingsDir := t.TempDir()
 	settingsPath := filepath.Join(settingsDir, "settings.json")
-	cfg := types.Config{SettingsPath: settingsPath, CRDTWorkdir: workDir}
+	cfg := Config{SettingsPath: settingsPath, CRDTWorkdir: workDir}
 
 	data, _ := json.MarshalIndent(types.Settings{"theme": "dark"}, "", "  ")
 	os.WriteFile(settingsPath, data, 0600)
@@ -76,7 +80,7 @@ func TestInitNode_StateContainsSettings(t *testing.T) {
 	workDir := t.TempDir()
 	settingsDir := t.TempDir()
 	settingsPath := filepath.Join(settingsDir, "settings.json")
-	cfg := types.Config{SettingsPath: settingsPath, CRDTWorkdir: workDir}
+	cfg := Config{SettingsPath: settingsPath, CRDTWorkdir: workDir}
 
 	data, _ := json.MarshalIndent(types.Settings{"theme": "dark", "lang": "en"}, "", "  ")
 	os.WriteFile(settingsPath, data, 0600)
@@ -98,7 +102,7 @@ func TestInitNode_EntriesHaveNonZeroClock(t *testing.T) {
 	workDir := t.TempDir()
 	settingsDir := t.TempDir()
 	settingsPath := filepath.Join(settingsDir, "settings.json")
-	cfg := types.Config{SettingsPath: settingsPath, CRDTWorkdir: workDir}
+	cfg := Config{SettingsPath: settingsPath, CRDTWorkdir: workDir}
 
 	data, _ := json.MarshalIndent(types.Settings{"theme": "dark"}, "", "  ")
 	os.WriteFile(settingsPath, data, 0600)
@@ -118,7 +122,7 @@ func TestInitNode_EntriesHaveNonZeroClock(t *testing.T) {
 
 func TestInitNode_MissingSettingsFileReturnsError(t *testing.T) {
 	workDir := t.TempDir()
-	cfg := types.Config{SettingsPath: "/nonexistent/settings.json", CRDTWorkdir: workDir}
+	cfg := Config{SettingsPath: "/nonexistent/settings.json", CRDTWorkdir: workDir}
 	err := InitNode(cfg)
 	if err == nil {
 		t.Fatal("expected error for missing settings file")
@@ -128,7 +132,7 @@ func TestInitNode_MissingSettingsFileReturnsError(t *testing.T) {
 // InitEmptyNode tests
 
 func TestInitEmptyNode_CreatesFiles(t *testing.T) {
-	cfg := types.Config{
+	cfg := Config{
 		CRDTWorkdir:  t.TempDir(),
 		SettingsPath: filepath.Join(t.TempDir(), "settings.json"),
 	}
@@ -154,7 +158,7 @@ func TestInitEmptyNode_CreatesFiles(t *testing.T) {
 }
 
 func TestInitEmptyNode_CreatesWorkDir(t *testing.T) {
-	cfg := types.Config{
+	cfg := Config{
 		CRDTWorkdir:  filepath.Join(t.TempDir(), "nested", "dir"),
 		SettingsPath: filepath.Join(t.TempDir(), "nested", "dir", "settings.json"),
 	}
@@ -246,7 +250,7 @@ func TestRun_RemoteUpdateWritesToFile(t *testing.T) {
 }
 func TestRun_InvalidRPCPortReturnsError(t *testing.T) {
 	workDir, settingsPath := setupWorkDir(t, types.Settings{})
-	cfg := types.Config{
+	cfg := Config{
 		CRDTWorkdir:  workDir,
 		SettingsPath: settingsPath,
 		GRPCPort:     1, // privileged port — should fail without root
@@ -264,7 +268,7 @@ func TestRun_InvalidRPCPortReturnsError(t *testing.T) {
 }
 
 func TestNew_NotInitialized(t *testing.T) {
-	cfg := types.Config{
+	cfg := Config{
 		CRDTWorkdir:  t.TempDir(), // no node_id — not initialized
 		SettingsPath: filepath.Join(t.TempDir(), "settings.json"),
 	}
@@ -286,7 +290,7 @@ func TestInitNode_CRDTInitError(t *testing.T) {
 	data, _ := json.MarshalIndent(types.Settings{"k": "v"}, "", "  ")
 	os.WriteFile(settingsPath, data, 0600)
 
-	cfg := types.Config{SettingsPath: settingsPath, CRDTWorkdir: filepath.Join(blocker, "sub")}
+	cfg := Config{SettingsPath: settingsPath, CRDTWorkdir: filepath.Join(blocker, "sub")}
 	if err := InitNode(cfg); err == nil {
 		t.Fatal("expected error when crdt dir cannot be created")
 	}
@@ -297,7 +301,7 @@ func TestInitEmptyNode_WorkDirNotCreatable(t *testing.T) {
 	blocker := filepath.Join(dir, "blocker")
 	os.WriteFile(blocker, []byte("x"), 0600)
 
-	cfg := types.Config{
+	cfg := Config{
 		CRDTWorkdir:  filepath.Join(blocker, "sub"),
 		SettingsPath: filepath.Join(t.TempDir(), "settings.json"),
 	}
@@ -311,7 +315,7 @@ func TestInitEmptyNode_WriteNodeIDError(t *testing.T) {
 	os.Chmod(dir, 0500)
 	defer os.Chmod(dir, 0700)
 
-	cfg := types.Config{
+	cfg := Config{
 		CRDTWorkdir:  dir,
 		SettingsPath: filepath.Join(t.TempDir(), "settings.json"),
 	}
@@ -326,7 +330,7 @@ func TestInitEmptyNode_SettingsWriteError(t *testing.T) {
 	os.Chmod(settingsDir, 0500)
 	defer os.Chmod(settingsDir, 0700)
 
-	cfg := types.Config{
+	cfg := Config{
 		CRDTWorkdir:  dir,
 		SettingsPath: filepath.Join(settingsDir, "settings.json"),
 	}
@@ -341,7 +345,7 @@ func TestInitEmptyNode_SettingsDirError(t *testing.T) {
 	blocker := filepath.Join(settingsBase, "blocker")
 	os.WriteFile(blocker, []byte("x"), 0600)
 
-	cfg := types.Config{
+	cfg := Config{
 		CRDTWorkdir:  dir,
 		SettingsPath: filepath.Join(blocker, "settings.json"),
 	}
@@ -352,7 +356,7 @@ func TestInitEmptyNode_SettingsDirError(t *testing.T) {
 
 func TestRun_WithPeerAddress(t *testing.T) {
 	workDir, settingsPath := setupWorkDir(t, types.Settings{})
-	cfg := types.Config{
+	cfg := Config{
 		CRDTWorkdir:   workDir,
 		SettingsPath:  settingsPath,
 		GRPCPort:      0,
@@ -406,5 +410,143 @@ func TestRun_OnFileSyncWriteError(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	if ctx.Err() != nil {
 		t.Fatal("controller exited unexpectedly")
+	}
+}
+
+// syncAllPeers tests
+
+func startPeerServer(t *testing.T, snap types.Snapshot) string {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	srv := network.NewUpdateServer(func() types.Snapshot { return snap })
+	grpcSrv := grpc.NewServer()
+	userpb.RegisterUpdateServiceServer(grpcSrv, srv)
+	go grpcSrv.Serve(lis)
+	t.Cleanup(func() {
+		grpcSrv.Stop()
+		lis.Close()
+	})
+	return lis.Addr().String()
+}
+
+func TestSyncAllPeers_NoPeers(t *testing.T) {
+	workDir, settingsPath := setupWorkDir(t, types.Settings{"theme": "dark"})
+	ctrl := newTestController(t, workDir, settingsPath, 0, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ctrl.crdt.Run(ctx)
+
+	ctrl.syncAllPeers(ctx) // no panic, no-op
+}
+
+func TestSyncAllPeers_DeliverNewerEntriesToCRDT(t *testing.T) {
+	workDir, settingsPath := setupWorkDir(t, types.Settings{"theme": "dark"})
+
+	peerSnap := types.Snapshot{
+		Entries: map[string]types.SettingEntry{
+			"lang": {
+				Key:   "lang",
+				Value: "fr",
+				Clock: types.HLC{
+					WallTime: time.Now().UnixNano() + int64(time.Second),
+					NodeID:   "peer-node",
+				},
+			},
+		},
+	}
+	peerAddr := startPeerServer(t, peerSnap)
+
+	cfg := Config{
+		CRDTWorkdir:   workDir,
+		SettingsPath:  settingsPath,
+		GRPCPort:      0,
+		PeerAddresses: []string{peerAddr},
+	}
+	ctrl, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ctrl.crdt.Run(ctx)
+
+	ctrl.syncAllPeers(ctx)
+	time.Sleep(300 * time.Millisecond)
+
+	if result := ctrl.crdt.Get("lang"); result.Value != "fr" {
+		t.Fatalf("expected fr, got %q", result.Value)
+	}
+}
+
+// runAntiEntropy / runTombstoneGC ticker tests
+
+func TestRunAntiEntropy_TickerFiresSyncAllPeers(t *testing.T) {
+	workDir, settingsPath := setupWorkDir(t, types.Settings{"theme": "dark"})
+
+	peerSnap := types.Snapshot{
+		Entries: map[string]types.SettingEntry{
+			"lang": {
+				Key:   "lang",
+				Value: "fr",
+				Clock: types.HLC{WallTime: time.Now().UnixNano() + int64(time.Second), NodeID: "peer"},
+			},
+		},
+	}
+	peerAddr := startPeerServer(t, peerSnap)
+
+	cfg := Config{
+		CRDTWorkdir:   workDir,
+		SettingsPath:  settingsPath,
+		GRPCPort:      0,
+		PeerAddresses: []string{peerAddr},
+	}
+	ctrl, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctrl.antiEntropyInterval = 10 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ctrl.crdt.Run(ctx)
+	go ctrl.runAntiEntropy(ctx)
+
+	time.Sleep(200 * time.Millisecond)
+
+	if result := ctrl.crdt.Get("lang"); result.Value != "fr" {
+		t.Fatalf("expected fr after anti-entropy tick, got %q", result.Value)
+	}
+}
+
+func TestRunTombstoneGC_TickerFiresPurgeTombstones(t *testing.T) {
+	workDir, settingsPath := setupWorkDir(t, types.Settings{})
+	ctrl, err := New(Config{CRDTWorkdir: workDir, SettingsPath: settingsPath})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctrl.gcInterval = 10 * time.Millisecond
+	ctrl.tombstoneTTL = 0 // purge all tombstones older than now
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ctrl.crdt.Run(ctx)
+
+	// inject a tombstone directly
+	ctrl.crdt.NotifyRemote(types.SettingEntry{
+		Key:     "dead",
+		Deleted: true,
+		Clock:   types.HLC{WallTime: 1, NodeID: "n"},
+	})
+	time.Sleep(50 * time.Millisecond) // let CRDT process it
+
+	go ctrl.runTombstoneGC(ctx)
+	time.Sleep(200 * time.Millisecond)
+
+	if entry := ctrl.crdt.Get("dead"); entry.Key != "" {
+		t.Fatalf("expected tombstone purged, still present: %+v", entry)
 	}
 }

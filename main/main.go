@@ -9,7 +9,6 @@ import (
 	"os/signal"
 
 	"github.com/gdr00/distributed-server-update/internal/controller"
-	"github.com/gdr00/distributed-server-update/internal/types"
 )
 
 func main() {
@@ -22,7 +21,7 @@ func main() {
 
 	if len(os.Args) > 1 && os.Args[1] == "init" {
 		initCmd.Parse(os.Args[2:])
-		cfg, err := types.LoadConfig(*initConfig)
+		cfg, err := controller.LoadConfig(*initConfig)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -45,7 +44,7 @@ func main() {
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
-	cfg, err := types.LoadConfig(*startConfig)
+	cfg, err := controller.LoadConfig(*startConfig)
 	if err != nil {
 		log.Fatal(err)
 	}
