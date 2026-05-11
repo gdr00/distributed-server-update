@@ -155,7 +155,8 @@ func (c *CRDT) Run(ctx context.Context) {
 		// I have incoming changes from one of the peers I am subscribed to
 		case entry := <-c.remoteCh:
 			if err := c.clock.Update(entry.Clock); err != nil {
-				log.Printf("remote clock anomaly (entry still accepted): %v", err)
+				log.Printf("remote clock anomaly, entry rejected: %v, %v", err, entry)
+				continue
 			}
 			if c.merge(entry) {
 				c.saveState()
