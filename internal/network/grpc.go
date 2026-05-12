@@ -16,12 +16,14 @@ type UpdateServer struct {
 	subscribers map[int]chan *userpb.ServerStateUpdate
 	nextSubID   int
 	getSnapshot func() types.Snapshot
+	applyRemote func(types.SettingEntry)
 }
 
-func NewUpdateServer(getSnapshot func() types.Snapshot) *UpdateServer {
+func NewUpdateServer(getSnapshot func() types.Snapshot, applyRemote func(types.SettingEntry)) *UpdateServer {
 	return &UpdateServer{
 		subscribers: make(map[int]chan *userpb.ServerStateUpdate),
 		getSnapshot: getSnapshot,
+		applyRemote: applyRemote,
 	}
 }
 
@@ -54,6 +56,15 @@ func (s *UpdateServer) Sync(ctx context.Context, req *userpb.SyncRequest) (*user
 		remote, exists := incoming[local.Key]
 		if !exists || remote.Clock.Before(local.Clock) {
 			newer = append(newer, ToProto(local))
+		}
+	}
+
+	if s.applyRemote != nil {
+		for _, remote := range incoming {
+			local, exists := snapshot.Entries[remote.Key]
+			if !exists || local.Clock.Before(remote.Clock) {
+				s.applyRemote(remote)
+			}
 		}
 	}
 

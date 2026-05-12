@@ -45,9 +45,13 @@ func New(cfg Config) (*Controller, error) {
 		antiEntropyInterval: 60 * time.Second,
 		gcInterval:          24 * time.Hour,
 	}
-	ctrl.network = network.NewUpdateServer(func() types.Snapshot {
-		return ctrl.crdt.Snapshot()
-	})
+	ctrl.network = network.NewUpdateServer(
+		func() types.Snapshot {
+			return ctrl.crdt.Snapshot()
+		},
+		func(entry types.SettingEntry) {
+			ctrl.crdt.NotifyRemote(entry)
+		})
 	return ctrl, nil
 }
 

@@ -132,7 +132,7 @@ func (c *CRDT) Snapshot() types.Snapshot {
 // true when incoming is newer
 func (c *CRDT) merge(incoming types.SettingEntry) (changed bool) {
 	existing, ok := c.state[incoming.Key]
-	if ok && incoming.Clock.Before(existing.Clock) {
+	if ok && !existing.Clock.Before(incoming.Clock) { // otherwise merges equal clocks
 		return false
 	}
 	c.state[incoming.Key] = incoming

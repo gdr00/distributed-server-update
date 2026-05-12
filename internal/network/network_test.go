@@ -29,7 +29,7 @@ func startTestServer(t *testing.T, snapshot func() types.Snapshot) (*UpdateServe
 	}
 
 	lis := bufconn.Listen(bufSize)
-	srv := NewUpdateServer(snapshot)
+	srv := NewUpdateServer(snapshot, nil)
 
 	grpcSrv := grpc.NewServer()
 	userpb.RegisterUpdateServiceServer(grpcSrv, srv)
@@ -73,7 +73,7 @@ func startTestServerWithLis(t *testing.T, snapshot func() types.Snapshot) (*Upda
 		}
 	}
 	lis := bufconn.Listen(bufSize)
-	srv := NewUpdateServer(snapshot)
+	srv := NewUpdateServer(snapshot, nil)
 	grpcSrv := grpc.NewServer()
 	userpb.RegisterUpdateServiceServer(grpcSrv, srv)
 	go grpcSrv.Serve(lis)
@@ -225,7 +225,7 @@ func TestBroadcast_MultipleSubscribers(t *testing.T) {
 func TestBroadcast_NoSubscribersIsNoop(t *testing.T) {
 	srv := NewUpdateServer(func() types.Snapshot {
 		return types.Snapshot{Entries: map[string]types.SettingEntry{}}
-	})
+	}, nil)
 	// should not panic or block
 	srv.Broadcast(&userpb.ServerStateUpdate{
 		Entry: ToProto(entry("theme", "dark", hlc(100, 0, "A"))),
@@ -328,6 +328,238 @@ func TestSync_EmptyLocalStateGetsEverything(t *testing.T) {
 	}
 	if len(resp.NewerEntries) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(resp.NewerEntries))
+	}
+}
+
+func TestSync_ServerAppliesIncomingNewerEntry(t *testing.T) {
+	serverState := types.Snapshot{
+		Entries: map[string]types.SettingEntry{
+			"theme": entry("theme", "dark", hlc(100, 0, "server")),
+		},
+	}
+
+	applied := make(chan types.SettingEntry, 1)
+	lis := bufconn.Listen(bufSize)
+	srv := NewUpdateServer(func() types.Snapshot { return serverState }, func(e types.SettingEntry) {
+		applied <- e
+	})
+	grpcSrv := grpc.NewServer()
+	userpb.RegisterUpdateServiceServer(grpcSrv, srv)
+	go grpcSrv.Serve(lis)
+	defer grpcSrv.Stop()
+
+	c := newBufconnClient(t, lis)
+	defer c.Close()
+
+	// client has newer version
+	_, err := c.client.Sync(context.Background(), &userpb.SyncRequest{
+		LocalState: []*userpb.SettingEntry{
+			ToProto(entry("theme", "light", hlc(200, 0, "client"))),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case e := <-applied:
+		if e.Key != "theme" || e.Value != "light" {
+			t.Fatalf("unexpected applied entry: %+v", e)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout: server did not apply client's newer entry")
+	}
+}
+
+func TestSync_ServerSkipsIncomingOlderEntry(t *testing.T) {
+	serverState := types.Snapshot{
+		Entries: map[string]types.SettingEntry{
+			"theme": entry("theme", "dark", hlc(200, 0, "server")),
+		},
+	}
+
+	applied := make(chan types.SettingEntry, 1)
+	lis := bufconn.Listen(bufSize)
+	srv := NewUpdateServer(func() types.Snapshot { return serverState }, func(e types.SettingEntry) {
+		applied <- e
+	})
+	grpcSrv := grpc.NewServer()
+	userpb.RegisterUpdateServiceServer(grpcSrv, srv)
+	go grpcSrv.Serve(lis)
+	defer grpcSrv.Stop()
+
+	c := newBufconnClient(t, lis)
+	defer c.Close()
+
+	// client has older version
+	_, err := c.client.Sync(context.Background(), &userpb.SyncRequest{
+		LocalState: []*userpb.SettingEntry{
+			ToProto(entry("theme", "light", hlc(100, 0, "client"))),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case e := <-applied:
+		t.Fatalf("server should not apply older client entry, got: %+v", e)
+	case <-time.After(100 * time.Millisecond):
+		// correct: nothing applied
+	}
+}
+
+func TestSync_ServerAppliesIncomingMissingKey(t *testing.T) {
+	// server has no entries; client has a key server doesn't know about
+	applied := make(chan types.SettingEntry, 1)
+	lis := bufconn.Listen(bufSize)
+	srv := NewUpdateServer(func() types.Snapshot {
+		return types.Snapshot{Entries: map[string]types.SettingEntry{}}
+	}, func(e types.SettingEntry) {
+		applied <- e
+	})
+	grpcSrv := grpc.NewServer()
+	userpb.RegisterUpdateServiceServer(grpcSrv, srv)
+	go grpcSrv.Serve(lis)
+	defer grpcSrv.Stop()
+
+	c := newBufconnClient(t, lis)
+	defer c.Close()
+
+	_, err := c.client.Sync(context.Background(), &userpb.SyncRequest{
+		LocalState: []*userpb.SettingEntry{
+			ToProto(entry("lang", "fr", hlc(100, 0, "client"))),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case e := <-applied:
+		if e.Key != "lang" || e.Value != "fr" {
+			t.Fatalf("unexpected applied entry: %+v", e)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout: server did not apply missing key from client")
+	}
+}
+
+func TestSync_NilApplyRemoteNoPanic(t *testing.T) {
+	// nil applyRemote must not panic even when client has newer entries
+	serverState := types.Snapshot{
+		Entries: map[string]types.SettingEntry{
+			"theme": entry("theme", "dark", hlc(100, 0, "server")),
+		},
+	}
+	_, client, cleanup := startTestServer(t, func() types.Snapshot { return serverState })
+	defer cleanup()
+
+	// client has newer version — applyRemote is nil in startTestServer
+	_, err := client.Sync(context.Background(), &userpb.SyncRequest{
+		LocalState: []*userpb.SettingEntry{
+			ToProto(entry("theme", "light", hlc(200, 0, "client"))),
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error with nil applyRemote: %v", err)
+	}
+}
+
+func TestSync_BothDirectionsExchanged(t *testing.T) {
+	// server has newer theme, client has newer lang — both directions must work in one call
+	serverState := types.Snapshot{
+		Entries: map[string]types.SettingEntry{
+			"theme": entry("theme", "dark", hlc(200, 0, "server")),
+			"lang":  entry("lang", "en", hlc(100, 0, "server")),
+		},
+	}
+
+	applied := make(chan types.SettingEntry, 2)
+	lis := bufconn.Listen(bufSize)
+	srv := NewUpdateServer(func() types.Snapshot { return serverState }, func(e types.SettingEntry) {
+		applied <- e
+	})
+	grpcSrv := grpc.NewServer()
+	userpb.RegisterUpdateServiceServer(grpcSrv, srv)
+	go grpcSrv.Serve(lis)
+	defer grpcSrv.Stop()
+
+	c := newBufconnClient(t, lis)
+	defer c.Close()
+
+	resp, err := c.client.Sync(context.Background(), &userpb.SyncRequest{
+		LocalState: []*userpb.SettingEntry{
+			ToProto(entry("theme", "light", hlc(100, 0, "client"))), // older — server wins
+			ToProto(entry("lang", "fr", hlc(200, 0, "client"))),     // newer — client wins
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// server → client: only theme (client's lang is newer)
+	if len(resp.NewerEntries) != 1 || resp.NewerEntries[0].Key != "theme" {
+		t.Fatalf("expected server to return only theme, got: %+v", resp.NewerEntries)
+	}
+	if resp.NewerEntries[0].Value != "dark" {
+		t.Fatalf("expected dark, got %s", resp.NewerEntries[0].Value)
+	}
+
+	// client → server: lang must be applied
+	select {
+	case e := <-applied:
+		if e.Key != "lang" || e.Value != "fr" {
+			t.Fatalf("unexpected applied entry: %+v", e)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout: server did not apply client's newer lang entry")
+	}
+
+	// only one apply expected
+	select {
+	case e := <-applied:
+		t.Fatalf("unexpected second apply: %+v", e)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestSync_ServerSkipsEqualClockEntry(t *testing.T) {
+	// client sends entry with same clock as server — server must not re-apply it
+	clock := hlc(100, 0, "node")
+	serverState := types.Snapshot{
+		Entries: map[string]types.SettingEntry{
+			"theme": entry("theme", "dark", clock),
+		},
+	}
+
+	applied := make(chan types.SettingEntry, 1)
+	lis := bufconn.Listen(bufSize)
+	srv := NewUpdateServer(func() types.Snapshot { return serverState }, func(e types.SettingEntry) {
+		applied <- e
+	})
+	grpcSrv := grpc.NewServer()
+	userpb.RegisterUpdateServiceServer(grpcSrv, srv)
+	go grpcSrv.Serve(lis)
+	defer grpcSrv.Stop()
+
+	c := newBufconnClient(t, lis)
+	defer c.Close()
+
+	_, err := c.client.Sync(context.Background(), &userpb.SyncRequest{
+		LocalState: []*userpb.SettingEntry{
+			ToProto(entry("theme", "dark", clock)), // identical clock
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case e := <-applied:
+		t.Fatalf("server should not re-apply entry with equal clock, got: %+v", e)
+	case <-time.After(100 * time.Millisecond):
+		// correct
 	}
 }
 
@@ -494,7 +726,7 @@ func TestStartRPCServer_StartsAndStops(t *testing.T) {
 
 	srv := NewUpdateServer(func() types.Snapshot {
 		return types.Snapshot{Entries: map[string]types.SettingEntry{}}
-	})
+	}, nil)
 
 	if err := StartRPCServer(ctx, srv, 0); err != nil {
 		t.Fatalf("unexpected error: %v", err)

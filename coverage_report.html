@@ -55,17 +55,17 @@
 			<div id="nav">
 				<select id="files">
 				
-				<option value="file0">github.com/gdr00/distributed-server-update/internal/controller/controller.go (92.4%)</option>
+				<option value="file0">github.com/gdr00/distributed-server-update/internal/controller/controller.go (91.0%)</option>
 				
 				<option value="file1">github.com/gdr00/distributed-server-update/internal/controller/types.go (100.0%)</option>
 				
 				<option value="file2">github.com/gdr00/distributed-server-update/internal/crdt/crdt.go (90.5%)</option>
 				
-				<option value="file3">github.com/gdr00/distributed-server-update/internal/logic/logic.go (90.0%)</option>
+				<option value="file3">github.com/gdr00/distributed-server-update/internal/logic/logic.go (88.6%)</option>
 				
 				<option value="file4">github.com/gdr00/distributed-server-update/internal/network/client.go (86.8%)</option>
 				
-				<option value="file5">github.com/gdr00/distributed-server-update/internal/network/grpc.go (95.2%)</option>
+				<option value="file5">github.com/gdr00/distributed-server-update/internal/network/grpc.go (95.7%)</option>
 				
 				<option value="file6">github.com/gdr00/distributed-server-update/internal/network/server.go (84.6%)</option>
 				
@@ -136,9 +136,13 @@ func New(cfg Config) (*Controller, error) <span class="cov8" title="1">{
                 antiEntropyInterval: 60 * time.Second,
                 gcInterval:          24 * time.Hour,
         }
-        ctrl.network = network.NewUpdateServer(func() types.Snapshot </span><span class="cov0" title="0">{
-                return ctrl.crdt.Snapshot()
-        }</span>)
+        ctrl.network = network.NewUpdateServer(
+                func() types.Snapshot </span><span class="cov0" title="0">{
+                        return ctrl.crdt.Snapshot()
+                }</span>,
+                func(entry types.SettingEntry) <span class="cov0" title="0">{
+                        ctrl.crdt.NotifyRemote(entry)
+                }</span>)
         <span class="cov8" title="1">return ctrl, nil</span>
 }
 
@@ -432,7 +436,7 @@ func (c *CRDT) Snapshot() types.Snapshot <span class="cov8" title="1">{
 // true when incoming is newer
 func (c *CRDT) merge(incoming types.SettingEntry) (changed bool) <span class="cov8" title="1">{
         existing, ok := c.state[incoming.Key]
-        if ok &amp;&amp; incoming.Clock.Before(existing.Clock) </span><span class="cov8" title="1">{
+        if ok &amp;&amp; !existing.Clock.Before(incoming.Clock) </span><span class="cov8" title="1">{
                 return false
         }</span>
         <span class="cov8" title="1">c.state[incoming.Key] = incoming
@@ -655,7 +659,7 @@ func (l *Logic) Watch(ctx context.Context, onChange func(types.SettingEntry)) er
                                 return nil
                         }</span>
                         <span class="cov8" title="1">if event.Has(fsnotify.Write) </span><span class="cov8" title="1">{
-                                if debounce != nil </span><span class="cov8" title="1">{
+                                if debounce != nil </span><span class="cov0" title="0">{
                                         debounce.Stop()
                                 }</span>
                                 // avoid read on partial writes to file
@@ -825,12 +829,14 @@ type UpdateServer struct {
         subscribers map[int]chan *userpb.ServerStateUpdate
         nextSubID   int
         getSnapshot func() types.Snapshot
+        applyRemote func(types.SettingEntry)
 }
 
-func NewUpdateServer(getSnapshot func() types.Snapshot) *UpdateServer <span class="cov8" title="1">{
+func NewUpdateServer(getSnapshot func() types.Snapshot, applyRemote func(types.SettingEntry)) *UpdateServer <span class="cov8" title="1">{
         return &amp;UpdateServer{
                 subscribers: make(map[int]chan *userpb.ServerStateUpdate),
                 getSnapshot: getSnapshot,
+                applyRemote: applyRemote,
         }
 }</span>
 
@@ -864,6 +870,15 @@ func (s *UpdateServer) Sync(ctx context.Context, req *userpb.SyncRequest) (*user
                 if !exists || remote.Clock.Before(local.Clock) </span><span class="cov8" title="1">{
                         newer = append(newer, ToProto(local))
                 }</span>
+        }
+
+        <span class="cov8" title="1">if s.applyRemote != nil </span><span class="cov8" title="1">{
+                for _, remote := range incoming </span><span class="cov8" title="1">{
+                        local, exists := snapshot.Entries[remote.Key]
+                        if !exists || local.Clock.Before(remote.Clock) </span><span class="cov8" title="1">{
+                                s.applyRemote(remote)
+                        }</span>
+                }
         }
 
         <span class="cov8" title="1">return &amp;userpb.SyncResponse{NewerEntries: newer}, nil</span>
