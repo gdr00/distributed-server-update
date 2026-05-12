@@ -62,7 +62,7 @@ func (h *HLC) Update(received HLC) error {
 
 	now := h.clock.Now()
 
-	if received.WallTime-now > int64(time.Minute) {
+	if received.WallTime-now > int64(10*time.Second) {
 
 		return fmt.Errorf("rejecting clock too far in future: %v", received)
 	}
