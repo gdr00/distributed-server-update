@@ -55,7 +55,7 @@
 			<div id="nav">
 				<select id="files">
 				
-				<option value="file0">github.com/gdr00/distributed-server-update/internal/controller/controller.go (91.0%)</option>
+				<option value="file0">github.com/gdr00/distributed-server-update/internal/controller/controller.go (90.9%)</option>
 				
 				<option value="file1">github.com/gdr00/distributed-server-update/internal/controller/types.go (100.0%)</option>
 				
@@ -65,7 +65,7 @@
 				
 				<option value="file4">github.com/gdr00/distributed-server-update/internal/network/client.go (86.8%)</option>
 				
-				<option value="file5">github.com/gdr00/distributed-server-update/internal/network/grpc.go (95.7%)</option>
+				<option value="file5">github.com/gdr00/distributed-server-update/internal/network/grpc.go (95.8%)</option>
 				
 				<option value="file6">github.com/gdr00/distributed-server-update/internal/network/server.go (84.6%)</option>
 				
@@ -102,7 +102,6 @@ import (
         "github.com/gdr00/distributed-server-update/internal/crdt"
         "github.com/gdr00/distributed-server-update/internal/logic"
         "github.com/gdr00/distributed-server-update/internal/network"
-        "github.com/gdr00/distributed-server-update/internal/network/userpb"
         "github.com/gdr00/distributed-server-update/internal/types"
         "github.com/google/uuid"
 )
@@ -203,13 +202,9 @@ func (ctrl *Controller) Run(ctx context.Context) error <span class="cov8" title=
         }
 
         // crdt → network (broadcast to peers)
-        <span class="cov8" title="1">ctrl.crdt.OnBroadcast = func(entry types.SettingEntry) </span><span class="cov8" title="1">{
-                ctrl.network.Broadcast(&amp;userpb.ServerStateUpdate{
-                        Entry: network.ToProto(entry),
-                })
-        }</span>
+        <span class="cov8" title="1">ctrl.crdt.OnBroadcast = ctrl.network.Broadcast
 
-        <span class="cov8" title="1">go ctrl.crdt.Run(ctx)
+        go ctrl.crdt.Run(ctx)
 
         // logic → crdt (local file changes)
         go func() </span><span class="cov8" title="1">{
@@ -436,7 +431,7 @@ func (c *CRDT) Snapshot() types.Snapshot <span class="cov8" title="1">{
 // true when incoming is newer
 func (c *CRDT) merge(incoming types.SettingEntry) (changed bool) <span class="cov8" title="1">{
         existing, ok := c.state[incoming.Key]
-        if ok &amp;&amp; !existing.Clock.Before(incoming.Clock) </span><span class="cov8" title="1">{
+        if ok &amp;&amp; !existing.Clock.Before(incoming.Clock) </span><span class="cov8" title="1">{ // otherwise merges equal clocks
                 return false
         }</span>
         <span class="cov8" title="1">c.state[incoming.Key] = incoming
@@ -840,7 +835,8 @@ func NewUpdateServer(getSnapshot func() types.Snapshot, applyRemote func(types.S
         }
 }</span>
 
-func (s *UpdateServer) Broadcast(update *userpb.ServerStateUpdate) <span class="cov8" title="1">{
+func (s *UpdateServer) Broadcast(entry types.SettingEntry) <span class="cov8" title="1">{
+        update := &amp;userpb.ServerStateUpdate{Entry: ToProto(entry)}
         s.mu.RLock()
         chs := make([]chan *userpb.ServerStateUpdate, 0, len(s.subscribers))
         for _, ch := range s.subscribers </span><span class="cov8" title="1">{
@@ -1611,7 +1607,7 @@ func (h *HLC) Update(received HLC) error <span class="cov8" title="1">{
 
         now := h.clock.Now()
 
-        if received.WallTime-now &gt; int64(time.Minute) </span><span class="cov8" title="1">{
+        if received.WallTime-now &gt; int64(10*time.Second) </span><span class="cov8" title="1">{
 
                 return fmt.Errorf("rejecting clock too far in future: %v", received)
         }</span>

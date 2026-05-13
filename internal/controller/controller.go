@@ -11,7 +11,6 @@ import (
 	"github.com/gdr00/distributed-server-update/internal/crdt"
 	"github.com/gdr00/distributed-server-update/internal/logic"
 	"github.com/gdr00/distributed-server-update/internal/network"
-	"github.com/gdr00/distributed-server-update/internal/network/userpb"
 	"github.com/gdr00/distributed-server-update/internal/types"
 	"github.com/google/uuid"
 )
@@ -112,11 +111,7 @@ func (ctrl *Controller) Run(ctx context.Context) error {
 	}
 
 	// crdt → network (broadcast to peers)
-	ctrl.crdt.OnBroadcast = func(entry types.SettingEntry) {
-		ctrl.network.Broadcast(&userpb.ServerStateUpdate{
-			Entry: network.ToProto(entry),
-		})
-	}
+	ctrl.crdt.OnBroadcast = ctrl.network.Broadcast
 
 	go ctrl.crdt.Run(ctx)
 

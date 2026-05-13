@@ -170,8 +170,7 @@ func TestBroadcast_DeliverToSubscriber(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond) // let subscriber register
 
-	update := &userpb.ServerStateUpdate{Entry: ToProto(entry("theme", "dark", hlc(100, 0, "A")))}
-	srv.Broadcast(update)
+	srv.Broadcast(entry("theme", "dark", hlc(100, 0, "A")))
 
 	received := make(chan *userpb.ServerStateUpdate, 1)
 	go func() {
@@ -203,9 +202,7 @@ func TestBroadcast_MultipleSubscribers(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	srv.Broadcast(&userpb.ServerStateUpdate{
-		Entry: ToProto(entry("theme", "dark", hlc(100, 0, "A"))),
-	})
+	srv.Broadcast(entry("theme", "dark", hlc(100, 0, "A")))
 
 	for i, stream := range []userpb.UpdateService_SubscribeStateUpdatesClient{stream1, stream2} {
 		received := make(chan struct{}, 1)
@@ -227,9 +224,7 @@ func TestBroadcast_NoSubscribersIsNoop(t *testing.T) {
 		return types.Snapshot{Entries: map[string]types.SettingEntry{}}
 	}, nil)
 	// should not panic or block
-	srv.Broadcast(&userpb.ServerStateUpdate{
-		Entry: ToProto(entry("theme", "dark", hlc(100, 0, "A"))),
-	})
+	srv.Broadcast(entry("theme", "dark", hlc(100, 0, "A")))
 }
 
 // ── Sync ─────────────────────────────────────────────────────────────────────
@@ -669,9 +664,7 @@ func TestClient_RunStream_ReceivesStreamMessage(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond) // let stream establish
 
-	srv.Broadcast(&userpb.ServerStateUpdate{
-		Entry: ToProto(entry("theme", "dark", hlc(100, 0, "A"))),
-	})
+	srv.Broadcast(entry("theme", "dark", hlc(100, 0, "A")))
 
 	select {
 	case e := <-received:

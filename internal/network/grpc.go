@@ -27,7 +27,8 @@ func NewUpdateServer(getSnapshot func() types.Snapshot, applyRemote func(types.S
 	}
 }
 
-func (s *UpdateServer) Broadcast(update *userpb.ServerStateUpdate) {
+func (s *UpdateServer) Broadcast(entry types.SettingEntry) {
+	update := &userpb.ServerStateUpdate{Entry: ToProto(entry)}
 	s.mu.RLock()
 	chs := make([]chan *userpb.ServerStateUpdate, 0, len(s.subscribers))
 	for _, ch := range s.subscribers {
