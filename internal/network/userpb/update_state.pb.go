@@ -305,8 +305,7 @@ const file_internal_network_proto_update_state_proto_rawDesc = "" +
 	"\rnewer_entries\x18\x01 \x03(\v2\r.SettingEntryR\fnewerEntries2{\n" +
 	"\rUpdateService\x12E\n" +
 	"\x15SubscribeStateUpdates\x12\x16.google.protobuf.Empty\x1a\x12.ServerStateUpdate0\x01\x12#\n" +
-	"\x04Sync\x12\f.SyncRequest\x1a\r.SyncResponseB\n" +
-	"Z\b./userpbb\x06proto3"
+	"\x04Sync\x12\f.SyncRequest\x1a\r.SyncResponseBDZBgithub.com/gdr00/distributed-server-update/internal/network/userpbb\x06proto3"
 
 var (
 	file_internal_network_proto_update_state_proto_rawDescOnce sync.Once

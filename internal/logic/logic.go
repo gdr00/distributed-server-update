@@ -24,14 +24,14 @@ func New(settingsPath string) *Logic {
 		settingsPath: settingsPath,
 		previous:     make(types.Settings),
 	}
-	if settings, err := l.Read(); err == nil {
+	if settings, err := l.ReadSettings(); err == nil {
 		l.previous = settings
 	}
 	return l
 }
 
-// Read parses the settings file into a plain key-value map
-func (l *Logic) Read() (types.Settings, error) {
+// ReadSettings parses the settings file into a plain key-value map
+func (l *Logic) ReadSettings() (types.Settings, error) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 

@@ -36,7 +36,7 @@ func setupLogic(t *testing.T, initial types.Settings) *Logic {
 func TestRead_ValidFile(t *testing.T) {
 	l := setupLogic(t, types.Settings{"theme": "dark", "lang": "en"})
 
-	settings, err := l.Read()
+	settings, err := l.ReadSettings()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestRead_ValidFile(t *testing.T) {
 func TestRead_EmptyFile(t *testing.T) {
 	l := setupLogic(t, types.Settings{})
 
-	settings, err := l.Read()
+	settings, err := l.ReadSettings()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestRead_EmptyFile(t *testing.T) {
 func TestRead_MissingFile(t *testing.T) {
 	l := New("/nonexistent/path/settings.json")
 
-	_, err := l.Read()
+	_, err := l.ReadSettings()
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
@@ -75,7 +75,7 @@ func TestRead_InvalidJSON(t *testing.T) {
 	os.WriteFile(path, []byte("not json {{{"), 0600)
 
 	l := New(path)
-	_, err := l.Read()
+	_, err := l.ReadSettings()
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -91,7 +91,7 @@ func TestWrite_NewKey(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	settings, _ := l.Read()
+	settings, _ := l.ReadSettings()
 	if settings["theme"] != "dark" {
 		t.Fatalf("expected dark, got %s", settings["theme"])
 	}
@@ -105,7 +105,7 @@ func TestWrite_UpdateExistingKey(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	settings, _ := l.Read()
+	settings, _ := l.ReadSettings()
 	if settings["theme"] != "light" {
 		t.Fatalf("expected light, got %s", settings["theme"])
 	}
@@ -119,7 +119,7 @@ func TestWrite_PreservesOtherKeys(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	settings, _ := l.Read()
+	settings, _ := l.ReadSettings()
 	if settings["lang"] != "en" {
 		t.Fatalf("expected lang to be preserved, got %s", settings["lang"])
 	}
@@ -133,7 +133,7 @@ func TestWrite_Tombstone_DeletesKey(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	settings, _ := l.Read()
+	settings, _ := l.ReadSettings()
 	if _, exists := settings["theme"]; exists {
 		t.Fatal("expected theme to be deleted")
 	}
@@ -150,7 +150,7 @@ func TestWrite_Tombstone_MissingKeyIsNoop(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	settings, _ := l.Read()
+	settings, _ := l.ReadSettings()
 	if len(settings) != 1 || settings["lang"] != "en" {
 		t.Fatalf("expected unchanged settings, got %v", settings)
 	}
@@ -165,7 +165,7 @@ func TestWrite_CreatesFileIfMissing(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	settings, _ := l.Read()
+	settings, _ := l.ReadSettings()
 	if settings["theme"] != "dark" {
 		t.Fatalf("expected dark, got %s", settings["theme"])
 	}

@@ -1,6 +1,6 @@
 syntax = "proto3";
 import "google/protobuf/empty.proto";
-option go_package = "./userpb";
+option go_package = "github.com/gdr00/distributed-server-update/internal/network/userpb";
 
 message HLC {
   int64  wall_time = 1;

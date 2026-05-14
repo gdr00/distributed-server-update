@@ -55,11 +55,11 @@
 			<div id="nav">
 				<select id="files">
 				
-				<option value="file0">github.com/gdr00/distributed-server-update/internal/controller/controller.go (90.9%)</option>
+				<option value="file0">github.com/gdr00/distributed-server-update/internal/controller/controller.go (92.1%)</option>
 				
 				<option value="file1">github.com/gdr00/distributed-server-update/internal/controller/types.go (100.0%)</option>
 				
-				<option value="file2">github.com/gdr00/distributed-server-update/internal/crdt/crdt.go (90.5%)</option>
+				<option value="file2">github.com/gdr00/distributed-server-update/internal/crdt/crdt.go (90.4%)</option>
 				
 				<option value="file3">github.com/gdr00/distributed-server-update/internal/logic/logic.go (88.6%)</option>
 				
@@ -103,7 +103,6 @@ import (
         "github.com/gdr00/distributed-server-update/internal/logic"
         "github.com/gdr00/distributed-server-update/internal/network"
         "github.com/gdr00/distributed-server-update/internal/types"
-        "github.com/google/uuid"
 )
 
 type Controller struct {
@@ -118,14 +117,16 @@ type Controller struct {
 }
 
 func New(cfg Config) (*Controller, error) <span class="cov8" title="1">{
-        c, err := crdt.New(cfg.CRDTWorkdir)
-        if err != nil </span><span class="cov8" title="1">{
+        c := crdt.New(cfg.CRDTWorkdir)
+        if err := c.Init(); err != nil </span><span class="cov8" title="1">{
                 return nil, fmt.Errorf("failed to load crdt: %w", err)
         }</span>
+
         <span class="cov8" title="1">clients, err := network.NewClients(cfg.PeerAddresses)
         if err != nil </span><span class="cov0" title="0">{
                 return nil, fmt.Errorf("failed to create peer clients: %w", err)
         }</span>
+
         <span class="cov8" title="1">ctrl := &amp;Controller{
                 cfg:                 cfg,
                 crdt:                c,
@@ -146,12 +147,14 @@ func New(cfg Config) (*Controller, error) <span class="cov8" title="1">{
 }
 
 // Init node with the "master" configuration when new system is initialized
-func InitNode(c Config) error <span class="cov8" title="1">{
-        entries, err := logic.New(c.SettingsPath).Read()
+func InitNode(cfg Config) error <span class="cov8" title="1">{
+        entries, err := logic.New(cfg.SettingsPath).ReadSettings()
         if err != nil </span><span class="cov8" title="1">{
                 return fmt.Errorf("failed to read settings: %w", err)
         }</span>
-        <span class="cov8" title="1">if err := crdt.Init(entries, c.CRDTWorkdir); err != nil </span><span class="cov8" title="1">{
+
+        <span class="cov8" title="1">c := crdt.New(cfg.CRDTWorkdir)
+        if err := c.InitNew(entries); err != nil </span><span class="cov8" title="1">{
                 return fmt.Errorf("failed to init crdt: %w", err)
         }</span>
         <span class="cov8" title="1">return nil</span>
@@ -159,20 +162,11 @@ func InitNode(c Config) error <span class="cov8" title="1">{
 
 // Init node to sync from others on the network
 func InitEmptyNode(cfg Config) error <span class="cov8" title="1">{
-        if err := os.MkdirAll(cfg.CRDTWorkdir, 0700); err != nil </span><span class="cov8" title="1">{
-                return fmt.Errorf("failed to create config dir: %w", err)
+        c := crdt.New(cfg.CRDTWorkdir)
+        if err := c.InitNew(types.Settings{}); err != nil </span><span class="cov8" title="1">{
+                return fmt.Errorf("failed to initialize new empty node: %w", err)
         }</span>
 
-        <span class="cov8" title="1">nodeID := uuid.New().String()
-        if err := os.WriteFile(filepath.Join(cfg.CRDTWorkdir, "node_id"), []byte(nodeID), 0600); err != nil </span><span class="cov8" title="1">{
-                return fmt.Errorf("failed to write node_id: %w", err)
-        }</span>
-
-        <span class="cov8" title="1">if err := os.WriteFile(filepath.Join(cfg.CRDTWorkdir, "crdt_state.json"), []byte("{}"), 0600); err != nil </span><span class="cov0" title="0">{
-                return fmt.Errorf("failed to write crdt state: %w", err)
-        }</span>
-
-        // create empty settings file so watcher can start
         <span class="cov8" title="1">settingsDir := filepath.Dir(cfg.SettingsPath)
         if err := os.MkdirAll(settingsDir, 0700); err != nil </span><span class="cov8" title="1">{
                 return fmt.Errorf("failed to create settings dir: %w", err)
@@ -181,7 +175,7 @@ func InitEmptyNode(cfg Config) error <span class="cov8" title="1">{
                 return fmt.Errorf("failed to write settings file: %w", err)
         }</span>
 
-        <span class="cov8" title="1">log.Printf("empty node initialized with ID %s", nodeID)
+        <span class="cov8" title="1">log.Printf("empty node initialized")
         return nil</span>
 }
 
@@ -335,14 +329,8 @@ type CRDT struct {
         OnFileSync  func(types.SettingEntry)      // injected callback for file writes
 }
 
-func New(workDir string) (*CRDT, error) <span class="cov8" title="1">{
-        nodeID, err := loadNodeID(workDir)
-        if err != nil </span><span class="cov8" title="1">{
-                return nil, err
-        }</span>
-        <span class="cov8" title="1">c := &amp;CRDT{
-                clock:      *types.NewHLC(nodeID),
-                state:      make(map[string]types.SettingEntry),
+func New(workDir string) *CRDT <span class="cov8" title="1">{
+        c := &amp;CRDT{
                 dir:        workDir,
                 localCh:    make(chan types.SettingEntry, 10),
                 remoteCh:   make(chan types.SettingEntry, 10),
@@ -350,46 +338,72 @@ func New(workDir string) (*CRDT, error) <span class="cov8" title="1">{
                 snapshotCh: make(chan snapshotRequest, 10),
                 gcCh:       make(chan int64, 1),
         }
+        return c
+}</span>
+
+func (c *CRDT) Init() error <span class="cov8" title="1">{
+
+        nodeID, err := loadNodeID(c.dir)
+        if err != nil </span><span class="cov8" title="1">{
+                // generate and save node_id
+                nodeID = uuid.New().String()
+                if err := os.WriteFile(filepath.Join(c.dir, "node_id"), []byte(nodeID), 0600); err != nil </span><span class="cov0" title="0">{
+                        return fmt.Errorf("failed to write node_id: %w", err)
+                }</span>
+        }
+
+        <span class="cov8" title="1">c.clock = *types.NewHLC(nodeID)
+
         if err := c.loadState(); err != nil </span><span class="cov8" title="1">{
-                return nil, err
+                return fmt.Errorf("failed to load crdt previous state: %v", err)
         }</span>
-        <span class="cov8" title="1">return c, nil</span>
+
+        <span class="cov8" title="1">log.Printf("node initialized with ID %s and %d settings", nodeID, len(c.state))
+        return nil</span>
 }
 
-func Init(entries types.Settings, workDir string) error <span class="cov8" title="1">{
-        if err := os.MkdirAll(workDir, 0700); err != nil </span><span class="cov8" title="1">{
+func (c *CRDT) InitNew(entries types.Settings) error <span class="cov8" title="1">{
+
+        if err := os.MkdirAll(c.dir, 0700); err != nil </span><span class="cov8" title="1">{
                 return fmt.Errorf("failed to create config dir: %w", err)
         }</span>
 
-        // generate and save node_id
-        <span class="cov8" title="1">nodeID := uuid.New().String()
-        if err := os.WriteFile(filepath.Join(workDir, "node_id"), []byte(nodeID), 0600); err != nil </span><span class="cov8" title="1">{
-                return fmt.Errorf("failed to write node_id: %w", err)
-        }</span>
+        <span class="cov8" title="1">nodeID, err := loadNodeID(c.dir)
+        if err != nil </span><span class="cov8" title="1">{
+                // generate and save node_id
+                nodeID = uuid.New().String()
+                if err := os.WriteFile(filepath.Join(c.dir, "node_id"), []byte(nodeID), 0600); err != nil </span><span class="cov8" title="1">{
+                        return fmt.Errorf("failed to write node_id: %w", err)
+                }</span>
+        }
 
-        // stamp each entry with a fresh clock
-        <span class="cov8" title="1">clock := types.HLC{NodeID: nodeID}
-        state := make(map[string]types.SettingEntry, len(entries))
-        for key, value := range entries </span><span class="cov8" title="1">{
-                clock.Tick()
-                state[key] = types.SettingEntry{
-                        Key:     key,
-                        Value:   value,
-                        Clock:   clock,
-                        Deleted: false,
-                }
-        }</span>
+        <span class="cov8" title="1">c.clock = *types.NewHLC(nodeID)
 
+        c.state = make(map[string]types.SettingEntry, len(entries))
+        // init newNode state
+        if len(entries) != 0 </span><span class="cov8" title="1">{
+                // stamp all entries with new clock
+                clock := types.HLC{NodeID: nodeID}
+                for key, value := range entries </span><span class="cov8" title="1">{
+                        clock.Tick()
+                        c.state[key] = types.SettingEntry{
+                                Key:     key,
+                                Value:   value,
+                                Clock:   clock,
+                                Deleted: false,
+                        }
+                }</span>
+        }
         // save crdt state
-        <span class="cov8" title="1">data, err := json.Marshal(state)
+        <span class="cov8" title="1">data, err := json.Marshal(c.state)
         if err != nil </span><span class="cov0" title="0">{
                 return fmt.Errorf("failed to marshal crdt state: %w", err)
         }</span>
-        <span class="cov8" title="1">if err := os.WriteFile(filepath.Join(workDir, "crdt_state.json"), data, 0600); err != nil </span><span class="cov8" title="1">{
+        <span class="cov8" title="1">if err := os.WriteFile(filepath.Join(c.dir, "crdt_state.json"), data, 0600); err != nil </span><span class="cov8" title="1">{
                 return fmt.Errorf("failed to write crdt state: %w", err)
         }</span>
 
-        <span class="cov8" title="1">log.Printf("node initialized with ID %s and %d settings", nodeID, len(state))
+        <span class="cov8" title="1">log.Printf("node initialized with ID %s and %d settings", nodeID, len(c.state))
         return nil</span>
 }
 
@@ -579,14 +593,14 @@ func New(settingsPath string) *Logic <span class="cov8" title="1">{
                 settingsPath: settingsPath,
                 previous:     make(types.Settings),
         }
-        if settings, err := l.Read(); err == nil </span><span class="cov8" title="1">{
+        if settings, err := l.ReadSettings(); err == nil </span><span class="cov8" title="1">{
                 l.previous = settings
         }</span>
         <span class="cov8" title="1">return l</span>
 }
 
-// Read parses the settings file into a plain key-value map
-func (l *Logic) Read() (types.Settings, error) <span class="cov8" title="1">{
+// ReadSettings parses the settings file into a plain key-value map
+func (l *Logic) ReadSettings() (types.Settings, error) <span class="cov8" title="1">{
         l.mu.RLock()
         defer l.mu.RUnlock()
 
@@ -1304,8 +1318,7 @@ const file_internal_network_proto_update_state_proto_rawDesc = "" +
         "\rnewer_entries\x18\x01 \x03(\v2\r.SettingEntryR\fnewerEntries2{\n" +
         "\rUpdateService\x12E\n" +
         "\x15SubscribeStateUpdates\x12\x16.google.protobuf.Empty\x1a\x12.ServerStateUpdate0\x01\x12#\n" +
-        "\x04Sync\x12\f.SyncRequest\x1a\r.SyncResponseB\n" +
-        "Z\b./userpbb\x06proto3"
+        "\x04Sync\x12\f.SyncRequest\x1a\r.SyncResponseBDZBgithub.com/gdr00/distributed-server-update/internal/network/userpbb\x06proto3"
 
 var (
         file_internal_network_proto_update_state_proto_rawDescOnce sync.Once
@@ -1371,7 +1384,7 @@ func file_internal_network_proto_update_state_proto_init() <span class="cov0" ti
 		
 		<pre class="file" id="file8" style="display: none">// Code generated by protoc-gen-go-grpc. DO NOT EDIT.
 // versions:
-// - protoc-gen-go-grpc v1.6.1
+// - protoc-gen-go-grpc v1.6.2
 // - protoc             v7.34.1
 // source: internal/network/proto/update_state.proto
 

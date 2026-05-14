@@ -36,14 +36,8 @@ type CRDT struct {
 	OnFileSync  func(types.SettingEntry)      // injected callback for file writes
 }
 
-func New(workDir string) (*CRDT, error) {
-	nodeID, err := loadNodeID(workDir)
-	if err != nil {
-		return nil, err
-	}
+func New(workDir string) *CRDT {
 	c := &CRDT{
-		clock:      *types.NewHLC(nodeID),
-		state:      make(map[string]types.SettingEntry),
 		dir:        workDir,
 		localCh:    make(chan types.SettingEntry, 10),
 		remoteCh:   make(chan types.SettingEntry, 10),
@@ -51,46 +45,72 @@ func New(workDir string) (*CRDT, error) {
 		snapshotCh: make(chan snapshotRequest, 10),
 		gcCh:       make(chan int64, 1),
 	}
-	if err := c.loadState(); err != nil {
-		return nil, err
-	}
-	return c, nil
+	return c
 }
 
-func Init(entries types.Settings, workDir string) error {
-	if err := os.MkdirAll(workDir, 0700); err != nil {
-		return fmt.Errorf("failed to create config dir: %w", err)
-	}
+func (c *CRDT) Init() error {
 
-	// generate and save node_id
-	nodeID := uuid.New().String()
-	if err := os.WriteFile(filepath.Join(workDir, "node_id"), []byte(nodeID), 0600); err != nil {
-		return fmt.Errorf("failed to write node_id: %w", err)
-	}
-
-	// stamp each entry with a fresh clock
-	clock := types.HLC{NodeID: nodeID}
-	state := make(map[string]types.SettingEntry, len(entries))
-	for key, value := range entries {
-		clock.Tick()
-		state[key] = types.SettingEntry{
-			Key:     key,
-			Value:   value,
-			Clock:   clock,
-			Deleted: false,
+	nodeID, err := loadNodeID(c.dir)
+	if err != nil {
+		// generate and save node_id
+		nodeID = uuid.New().String()
+		if err := os.WriteFile(filepath.Join(c.dir, "node_id"), []byte(nodeID), 0600); err != nil {
+			return fmt.Errorf("failed to write node_id: %w", err)
 		}
 	}
 
+	c.clock = *types.NewHLC(nodeID)
+
+	if err := c.loadState(); err != nil {
+		return fmt.Errorf("failed to load crdt previous state: %v", err)
+	}
+
+	log.Printf("node initialized with ID %s and %d settings", nodeID, len(c.state))
+	return nil
+}
+
+func (c *CRDT) InitNew(entries types.Settings) error {
+
+	if err := os.MkdirAll(c.dir, 0700); err != nil {
+		return fmt.Errorf("failed to create config dir: %w", err)
+	}
+
+	nodeID, err := loadNodeID(c.dir)
+	if err != nil {
+		// generate and save node_id
+		nodeID = uuid.New().String()
+		if err := os.WriteFile(filepath.Join(c.dir, "node_id"), []byte(nodeID), 0600); err != nil {
+			return fmt.Errorf("failed to write node_id: %w", err)
+		}
+	}
+
+	c.clock = *types.NewHLC(nodeID)
+
+	c.state = make(map[string]types.SettingEntry, len(entries))
+	// init newNode state
+	if len(entries) != 0 {
+		// stamp all entries with new clock
+		clock := types.HLC{NodeID: nodeID}
+		for key, value := range entries {
+			clock.Tick()
+			c.state[key] = types.SettingEntry{
+				Key:     key,
+				Value:   value,
+				Clock:   clock,
+				Deleted: false,
+			}
+		}
+	}
 	// save crdt state
-	data, err := json.Marshal(state)
+	data, err := json.Marshal(c.state)
 	if err != nil {
 		return fmt.Errorf("failed to marshal crdt state: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(workDir, "crdt_state.json"), data, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(c.dir, "crdt_state.json"), data, 0600); err != nil {
 		return fmt.Errorf("failed to write crdt state: %w", err)
 	}
 
-	log.Printf("node initialized with ID %s and %d settings", nodeID, len(state))
+	log.Printf("node initialized with ID %s and %d settings", nodeID, len(c.state))
 	return nil
 }
 

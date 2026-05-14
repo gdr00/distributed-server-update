@@ -23,7 +23,8 @@ func setupCRDT(t *testing.T) (*CRDT, string) {
 	if err := os.WriteFile(dir+"/node_id", []byte("test-node"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	c, err := New(dir)
+	c := New(dir)
+	err := c.Init()
 	if err != nil {
 		t.Fatalf("setupCRDT: %v", err)
 	}
@@ -268,9 +269,9 @@ func TestRun_ClockMonotonicallyIncreases(t *testing.T) {
 
 func TestInit_CreatesNodeIDAndState(t *testing.T) {
 	dir := t.TempDir()
-	err := Init(types.Settings{"theme": "dark", "lang": "en"}, dir)
+	err := New(dir).InitNew(types.Settings{"theme": "dark", "lang": "en"})
 	if err != nil {
-		t.Fatalf("Init() error = %v", err)
+		t.Fatalf("InitNew() error = %v", err)
 	}
 	nodeIDData, err := os.ReadFile(filepath.Join(dir, "node_id"))
 	if err != nil {
@@ -297,7 +298,7 @@ func TestInit_CreatesNodeIDAndState(t *testing.T) {
 
 func TestInit_ClocksAreStamped(t *testing.T) {
 	dir := t.TempDir()
-	Init(types.Settings{"key": "val"}, dir)
+	New(dir).InitNew(types.Settings{"key": "val"})
 	stateData, _ := os.ReadFile(filepath.Join(dir, "crdt_state.json"))
 	var state map[string]types.SettingEntry
 	json.Unmarshal(stateData, &state)
@@ -311,8 +312,8 @@ func TestInit_ClocksAreStamped(t *testing.T) {
 
 func TestInit_EmptySettings(t *testing.T) {
 	dir := t.TempDir()
-	if err := Init(types.Settings{}, dir); err != nil {
-		t.Fatalf("Init() error = %v", err)
+	if err := New(dir).InitNew(types.Settings{}); err != nil {
+		t.Fatalf("InitNew() error = %v", err)
 	}
 	stateData, _ := os.ReadFile(filepath.Join(dir, "crdt_state.json"))
 	var state map[string]types.SettingEntry
@@ -324,8 +325,8 @@ func TestInit_EmptySettings(t *testing.T) {
 
 func TestInit_CreatesNestedDir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nested", "dir")
-	if err := Init(types.Settings{}, dir); err != nil {
-		t.Fatalf("Init() error = %v", err)
+	if err := New(dir).InitNew(types.Settings{}); err != nil {
+		t.Fatalf("InitNew() error = %v", err)
 	}
 }
 
@@ -379,9 +380,10 @@ func TestRun_SaveStateWriteFailureIsNonFatal(t *testing.T) {
 
 func TestNew_NotInitialized(t *testing.T) {
 	dir := t.TempDir()
-	_, err := New(dir)
+	// no crdt_state.json — Init must fail
+	err := New(dir).Init()
 	if err == nil {
-		t.Fatal("expected error when node_id missing")
+		t.Fatal("expected error when crdt_state.json missing")
 	}
 }
 
@@ -389,7 +391,7 @@ func TestNew_MissingStateFile(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(dir+"/node_id", []byte("test-node"), 0600)
 	// no crdt_state.json
-	_, err := New(dir)
+	err := New(dir).Init()
 	if err == nil {
 		t.Fatal("expected error when crdt_state.json missing")
 	}
@@ -399,7 +401,7 @@ func TestNew_CorruptedState(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(dir+"/node_id", []byte("test-node"), 0600)
 	os.WriteFile(dir+"/crdt_state.json", []byte("{bad json"), 0600)
-	_, err := New(dir)
+	err := New(dir).Init()
 	if err == nil {
 		t.Fatal("expected error when crdt_state.json is corrupt")
 	}
@@ -409,7 +411,7 @@ func TestInit_MkdirError(t *testing.T) {
 	dir := t.TempDir()
 	blocker := filepath.Join(dir, "blocker")
 	os.WriteFile(blocker, []byte("x"), 0600)
-	err := Init(types.Settings{}, filepath.Join(blocker, "sub"))
+	err := New(filepath.Join(blocker, "sub")).InitNew(types.Settings{})
 	if err == nil {
 		t.Fatal("expected error when workdir cannot be created")
 	}
@@ -419,7 +421,7 @@ func TestInit_WriteNodeIDError(t *testing.T) {
 	dir := t.TempDir()
 	os.Chmod(dir, 0500)
 	defer os.Chmod(dir, 0700)
-	err := Init(types.Settings{}, dir)
+	err := New(dir).InitNew(types.Settings{})
 	if err == nil {
 		t.Fatal("expected error when node_id cannot be written")
 	}
@@ -432,7 +434,7 @@ func TestInit_WriteStateError(t *testing.T) {
 	os.WriteFile(statePath, []byte("{}"), 0400)
 	defer os.Chmod(statePath, 0600)
 
-	err := Init(types.Settings{"k": "v"}, dir)
+	err := New(dir).InitNew(types.Settings{"k": "v"})
 	if err == nil {
 		t.Fatal("expected error when crdt state cannot be written")
 	}

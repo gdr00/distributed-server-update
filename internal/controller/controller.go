@@ -12,7 +12,6 @@ import (
 	"github.com/gdr00/distributed-server-update/internal/logic"
 	"github.com/gdr00/distributed-server-update/internal/network"
 	"github.com/gdr00/distributed-server-update/internal/types"
-	"github.com/google/uuid"
 )
 
 type Controller struct {
@@ -27,14 +26,16 @@ type Controller struct {
 }
 
 func New(cfg Config) (*Controller, error) {
-	c, err := crdt.New(cfg.CRDTWorkdir)
-	if err != nil {
+	c := crdt.New(cfg.CRDTWorkdir)
+	if err := c.Init(); err != nil {
 		return nil, fmt.Errorf("failed to load crdt: %w", err)
 	}
+
 	clients, err := network.NewClients(cfg.PeerAddresses)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create peer clients: %w", err)
 	}
+
 	ctrl := &Controller{
 		cfg:                 cfg,
 		crdt:                c,
@@ -55,12 +56,14 @@ func New(cfg Config) (*Controller, error) {
 }
 
 // Init node with the "master" configuration when new system is initialized
-func InitNode(c Config) error {
-	entries, err := logic.New(c.SettingsPath).Read()
+func InitNode(cfg Config) error {
+	entries, err := logic.New(cfg.SettingsPath).ReadSettings()
 	if err != nil {
 		return fmt.Errorf("failed to read settings: %w", err)
 	}
-	if err := crdt.Init(entries, c.CRDTWorkdir); err != nil {
+
+	c := crdt.New(cfg.CRDTWorkdir)
+	if err := c.InitNew(entries); err != nil {
 		return fmt.Errorf("failed to init crdt: %w", err)
 	}
 	return nil
@@ -68,20 +71,11 @@ func InitNode(c Config) error {
 
 // Init node to sync from others on the network
 func InitEmptyNode(cfg Config) error {
-	if err := os.MkdirAll(cfg.CRDTWorkdir, 0700); err != nil {
-		return fmt.Errorf("failed to create config dir: %w", err)
+	c := crdt.New(cfg.CRDTWorkdir)
+	if err := c.InitNew(types.Settings{}); err != nil {
+		return fmt.Errorf("failed to initialize new empty node: %w", err)
 	}
 
-	nodeID := uuid.New().String()
-	if err := os.WriteFile(filepath.Join(cfg.CRDTWorkdir, "node_id"), []byte(nodeID), 0600); err != nil {
-		return fmt.Errorf("failed to write node_id: %w", err)
-	}
-
-	if err := os.WriteFile(filepath.Join(cfg.CRDTWorkdir, "crdt_state.json"), []byte("{}"), 0600); err != nil {
-		return fmt.Errorf("failed to write crdt state: %w", err)
-	}
-
-	// create empty settings file so watcher can start
 	settingsDir := filepath.Dir(cfg.SettingsPath)
 	if err := os.MkdirAll(settingsDir, 0700); err != nil {
 		return fmt.Errorf("failed to create settings dir: %w", err)
@@ -90,7 +84,7 @@ func InitEmptyNode(cfg Config) error {
 		return fmt.Errorf("failed to write settings file: %w", err)
 	}
 
-	log.Printf("empty node initialized with ID %s", nodeID)
+	log.Printf("empty node initialized")
 	return nil
 }
 
