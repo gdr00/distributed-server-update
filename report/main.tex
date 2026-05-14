@@ -1,0 +1,689 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage[english]{babel}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{hyperref}
+
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  frame=single,
+  keywordstyle=\bfseries,
+  commentstyle=\color{gray}\itshape,
+  showstringspaces=false,
+  tabsize=4,
+  morekeywords={func,type,struct,chan,go,select,case,return,if,for,range,
+  make,nil,true,false,var,const,package,import,defer,error},
+}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{Distributed Configuration Updater:\\
+  Design and Implementation of a CRDT-Based\\
+Settings Replication System}
+
+\author{\IEEEauthorblockN{Gabriele Da Re}
+  \IEEEauthorblockA{\textit{Dept. Mathematics} \\
+    \textit{Universit\`{a} degli Studi di Padova}\\
+    Padova, Italy \\
+  gabriele.dare00@gmail.com}
+}
+
+\maketitle
+
+\begin{abstract}
+  This paper describes the architecture, implementation and decisions made during
+  the creation of a configuration synchronization system for small server clusters.
+  The system aims to replicate Key-Value (KV) entries across nodes through: Last-Writer-Wins (LWW),
+  Conflict-free Replicated Data Type (CRDT), gRPC transport protocol and a Hybrid Logical Clock (HLC) for causal ordering.
+  We explain the decisions made designing each module and the problems encountered/mitigated during development such as: Clock-skew,
+  crash persistance handling, tombstones management and the anti-entropy approach and lifecycle enforcement between initialisation
+  and runtime phases.
+\end{abstract}
+
+\begin{IEEEkeywords}
+  CRDT, distributed systems, data consistency, hybrid logical clocks,
+  gRPC, Go, key-value store
+\end{IEEEkeywords}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Introduction}
+% ─────────────────────────────────────────────────────────────────────────────
+
+Configuration management across a server cluster is a common operational
+challenge. Changes to settings such as feature flags, service endpoints,
+parameteers must propagate to every node without a coordinator becoming
+the single failure point.
+
+Approaches like \href{https://etcd.io/}{etcd},
+\href{https://developer.hashicorp.com/consul}{Consul} rely on a leader node or a
+distributed database. These provide linearisability at the cost of availability
+(CP part of the CAP theorem and ACID principle): when the leader or a majority quorum is unreachable,
+there is no working system. For configuration data, human operators can intervene
+on conflicts and having stale data in some circumstances is relatively low risk,
+thus the trade-off favours Availability and Partition tolerance having \textbf{eventual} Consistency (AP).
+
+Conflict-free Replicated Data Types (CRDTs) \cite{shapiro2011} offer an
+alternative: every node can accept writes locally, the data
+structure guarantees that any two nodes with the same set of updates will
+converge to the same state, without coordination. This paper describes a
+practical implementation of a CRDT based configuration store targeting small,
+fixed-membership clusters where $O(100)$ configuration keys are replicated
+across $O(10)$ nodes. This limit can be pushed up to $O(1000)$ keys and $O(50)$ nodes
+if necessary, based upon limits imposed from the full snapshot, sync implementation \ref{sec:antientropy}.
+
+The implementation is written in Go and uses gRPC for inter-node
+communication. The remainder of this paper is structured as follows.
+Section~\ref{sec:arch} presents the overall system architecture.
+Section~\ref{sec:crdt} describes the CRDT data model.
+Section~\ref{sec:hlc} covers the Hybrid Logical Clock.
+Section~\ref{sec:concurrency} explains the concurrency model.
+Section~\ref{sec:network} details the network layer.
+Section~\ref{sec:antientropy} discusses anti-entropy reconciliation.
+Section~\ref{sec:persistence} describes crash-safe persistence.
+Section~\ref{sec:gc} presents tombstone garbage collection.
+Section~\ref{sec:lifecycle} covers lifecycle and error handling.
+Section~\ref{sec:testing} outlines the testing strategy.
+Section~\ref{sec:conclusion} concludes.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{System Architecture}
+\label{sec:arch}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The system is structured as five Go packages with a strict dependency
+hierarchy, shown in Table~\ref{tab:packages}.
+
+\begin{table}[htbp]
+  \caption{Package responsibilities}
+  \label{tab:packages}
+  \begin{center}
+    \begin{tabular}{ll}
+      \toprule
+      \textbf{Package} & \textbf{Responsibility} \\
+      \midrule
+      \texttt{types}      & Shared domain types: HLC, SettingEntry, Snapshot \\
+      \texttt{crdt}       & LWW CRDT, state machine, persistence \\
+      \texttt{logic}      & Local settings file watcher and writer \\
+      \texttt{network}    & gRPC server, streaming client, proto conversion \\
+      \texttt{controller} & Wires all packages, lifecycle and backgrounds tasks \\
+      \midrule
+      \texttt{main}       & CLI entry-point \\
+      \bottomrule
+    \end{tabular}
+  \end{center}
+\end{table}
+
+The data flows through the system following four paths, wired up in
+\texttt{controller.Run}:
+
+\begin{enumerate}
+  \item \textbf{Local write}: the \texttt{logic} watcher detects file
+    changes on write and pushes a \texttt{SettingEntry} to \texttt{crdt.NotifyLocal},
+    which queues it in local channel of the CRDT actor. The CRDT ticks
+    its clock, timestamps the entry and merges it, persists state, and calls
+    \texttt{OnBroadcast} delegating the broadcast to the network layer.
+  \item \textbf{Remote write}: a peer to which the node is subscribed streams an update,
+    \texttt{network.Client} calls \texttt{crdt.NotifyRemote}. The CRDT
+    updates its clock, merges, persists, and calls \texttt{OnFileSync}
+    that delegates the \texttt{logic} layer to write the change locally.
+  \item \textbf{Anti-entropy}: a ticker in the controller calls \texttt{syncAllPeers},
+    which sends the local snapshot to each peer via a Sync RPC whose returns (if any)
+    any newer entries through \texttt{NotifyRemote}.
+  \item \textbf{Tombstone GC}: another separate ticker calls
+    \texttt{crdt.PurgeTombstones}, whose adhibited at removing stale deleted entries
+    from the in-memory state map via the CRDT actor model.
+\end{enumerate}
+
+The controller is the only package that depends on all the others, preventing import cycles.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{CRDT Data Model}
+\label{sec:crdt}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Data Model}
+
+The data structure applies \textbf{LWW-Register} semantics \cite{shapiro2011}
+per key in a dictionary: each \texttt{SettingEntry} carries a payload,
+an HLC as timestamp and a tombstone flag. The tombstone turns each register into
+a two-state register (live/deleted), deletion itself is a timestamped
+write, subject to the same LWW rule.
+
+\begin{lstlisting}
+type SettingEntry struct {
+    Key     string
+    Value   string
+    Clock   HLC
+    Deleted bool
+}
+\end{lstlisting}
+
+\subsection{Merge Semantics}
+\label{merge-semantics}
+
+Two nodes merge by iterating one map against the other and checking
+for each key the entry with the higher clock thus the winning one. On equal clocks,
+the lexicographically larger NodeID is used as tiebreaker,
+ensuring deterministic total order.
+
+\begin{lstlisting}
+func (c *CRDT) merge(incoming SettingEntry) bool {
+    existing, ok := c.state[incoming.Key]
+    if ok && !existing.Clock.Before(incoming.Clock) {
+        return false
+    }
+    c.state[incoming.Key] = incoming
+    return true
+}
+\end{lstlisting}
+
+\subsection{Tombstone Semantics}
+
+Deletions are represented as tombstones: entry with \texttt{Deleted~=~true}
+and a fresh clock. Tombstones undergo the same LWW merge as the payload and
+can be displaced by a later write. This prevents the anomaly where a deletion
+arrives after a concurrent write and erroneously removes the newer value.
+
+\subsection{CvRDT}
+
+The implementation is a hybrid CRDT\@: each local state change broadcasts a
+\texttt{SettingEntry} to peers (operation-based style), while a timed
+\texttt{Sync} provides anti-entropy reconciliation (state-based style).
+Because LWW merge is commutative and idempotent, each broadcast is algebraically
+equivalent to a partial state merge. Convergence is guaranteed
+entirely by the state-based anti-entropy, the broadcast is a best-effort optimisation.
+
+\subsection{Convergence Proof (CvRDT)}
+\label{sec:cvrdtproof}
+
+\paragraph{State forms a join-semilattice.}
+Define the replica state as $S = \mathrm{Map}[\mathit{String} \to
+\mathit{SettingEntry}]$.
+
+\noindent Impose a partial order $\forall k \in Keys$
+\begin{equation}
+  S_1 \leq S_2 \iff \forall k: S_1[k].\mathit{Clock} \leq S_2[k].\mathit{Clock}
+\end{equation}
+where \texttt{Before} defines the strict order $<$ on clocks (Definition~\ref{sec:hlc}),
+and $\leq$ is its reflexive closure: $a \leq b \iff a < b \;\lor\; a = b$.
+The least upper bound per key is
+\begin{equation}
+  (S_1 \sqcup S_2)[k] = \arg\max_{\mathit{Clock}}\bigl(S_1[k],\; S_2[k]\bigr)
+\end{equation}
+which is exactly \texttt{merge()}.
+
+\paragraph{Merge implements the LUB.}
+Let $A$, $B$, $C$ be \texttt{SettingEntry} values for the same key.
+
+\begin{itemize}
+  \item \textbf{Commutative:} $\mathrm{merge}(A,B) = \mathrm{merge}(B,A)$, since
+    $\max(\mathit{Clock}_A, \mathit{Clock}_B)$ is symmetric.
+  \item \textbf{Idempotent:} $\mathrm{merge}(A,A) = A$, since
+    $\max(T,T) = T$.
+  \item \textbf{Associative:} $\mathrm{merge}(A,\mathrm{merge}(B,C)) = \mathrm{merge}(\mathrm{merge}(A,B),C)$, since $\max$ is associative.
+\end{itemize}
+
+\paragraph{Monotonicity.}
+Every merge moves state upward in the lattice:
+\begin{equation}
+  S \leq \mathrm{merge}(S,\, e),
+\end{equation}
+
+since \texttt{merge} replaces an entry only when the incoming clock is strictly
+greater, and never decreases a clock value.
+
+\paragraph{Liveness.}
+\texttt{syncAllPeers} runs periodically exchanging full snapshots. After a
+network partition, reconnection triggers \texttt{Sync}, delivering all missing updates.
+Hence every update eventually reaches every replica.
+
+\paragraph{Conclusion.}
+By the Eventual Consistency theorem for CvRDTs \cite{shapiro2011}: any
+two replicas that have received the same set of updates hold identical maps,
+regardless of delivery order.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Hybrid Logical Clock}
+\label{sec:hlc}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Motivation}
+
+A pure Lamport clock provides causal ordering but loses the physical-time
+locality property: events that happen close together in real time may receive
+widely separated clock values if logical increments accumulate. Hybrid Logical
+Clocks \cite{kulkarni2014} integrates the Lamport clock with a wallTime,
+preserving the benefits of both.
+
+\subsection{Clock Structure}
+
+Each HLC is a triple $(wall, logical, nodeID)$. The wall field stores
+Unix nanoseconds, the logical field is a 32-bit logical counter, the NodeID is a UUID
+string adhibited for the tiebreak. \ref{merge-semantics}. This ensures \texttt{Before()}
+commutativity since $\forall n_i, n_j\in Nodes,\; i\neq j: Id(n_i) \neq Id(n_j)$
+
+\subsection{Tick and Update Rules}
+
+On a local event (\emph{tick}), the clock advances ($\ell_l, \ell_r$ for
+$logical_{local}, logical_{received}$, $w_l, w_r$ for $wall_{local}, wall_{received}$):
+\begin{align}
+  wall' &= \max(w_l,\; now), \notag \\
+  logical' &=
+  \begin{cases}
+    logical + 1 & wall' = w_l \\
+    0           & otherwise
+  \end{cases}
+\end{align}
+
+On receiving a remote clock (\emph{update}), the canonical
+Kulkarni--Demirbas rule \cite{kulkarni2014} is applied:
+\begin{equation}
+  wall' = \max(w_l,\; w_r,\; now)
+\end{equation}
+The logical counter then captures concurrency at the chosen wall time
+:
+\begin{equation}
+  logical' =
+  \begin{cases}
+    \max(\ell_l, \ell_r) + 1 & w' = w_l = w_r \\
+    \ell_r + 1                 & w' = w_r \neq w_l \\
+    0                          & otherwise
+  \end{cases}
+\end{equation}
+
+\subsection{Clock Skew Handling}
+
+\begin{lstlisting}
+if received.WallTime - now > int64(10*time.Second) {
+    return fmt.Errorf("rejecting: clock too far in future")
+}
+\end{lstlisting}
+
+Rejection maps cleanly onto two failure cases.
+
+\paragraph{Sender clock too far ahead} (e.g.\ B at $+90s$, threshold
+$60s$): every correctly synchronised node rejects the entry.
+B's writes are dropped cluster-wide until its NTP is corrected. No divergence occurs
+
+\paragraph{Receiver clock too far behind} (e.g.\ A at $-30s$, B at
+$+50s$): from A's perspective the skew is $80s > 60s$, so A rejects,
+from a synchronised node C the skew is $50s < 60s$, so C accepts.
+A and C temporarily diverge. This divergence is \emph{A's fault}: a
+$30s$ NTP drift is an anomaly that requires intervention regardless
+of this system. Once A's clock is corrected, the next anti-entropy
+round delivers the missing entries and convergence is restored.
+The divergence window is bounded by the NTP correction time, not permanent.
+
+The $5s$ threshold is a configurable operational boundary. Nodes
+whose NTP drift pass it, diverge until clock correction, this is
+resolved at the infrastructure level (NTP monitoring,
+alerting) rather than silently accepting future-stamped entries that would risk
+clock poisoning across the cluster.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Concurrency Model}
+\label{sec:concurrency}
+% ─────────────────────────────────────────────────────────────────────────────
+
+All mutations to the CRDT state map are serialised through a single actor
+goroutine running a \texttt{select} loop over five typed channels:
+
+\begin{lstlisting}
+type CRDT struct {
+    state      map[string]SettingEntry
+    localCh    chan SettingEntry
+    remoteCh   chan SettingEntry
+    queryCh    chan queryRequest
+    snapshotCh chan snapshotRequest
+    gcCh       chan int64
+}
+\end{lstlisting}
+
+\textbf{No mutex} is required: only the actor goroutine accesses channels and
+CRDT state ensuring operation atomicity. External callers (\texttt{NotifyLocal}, \texttt{NotifyRemote},
+\texttt{Snapshot}, \texttt{queryRequest}, \texttt{PurgeTombstones}) communicate exclusively through
+channels. Snapshot and query requests are buffered synchronous response channels thus blocking
+untill the request is serviced.
+
+Callbacks (\texttt{OnBroadcast}, \texttt{OnFileSync}) are invoked
+synchronously within the actor loop. The \texttt{OnFileSync} callback
+dispatches disk writes on a separate goroutine to prevent blocking the actor loop
+on I/O.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Network Layer}
+\label{sec:network}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{gRPC Service}
+
+The inter-node protocol exposes two RPCs over gRPC:
+
+\begin{itemize}
+  \item \textbf{SubscribeStateUpdates} (server-streaming): the caller receives
+    \texttt{ServerStateUpdate} messages through a persistent stream every time
+    the server calls \texttt{Broadcast}. This ensures real-time propagation of
+    local edits.
+  \item \textbf{Sync} (unary): the caller sends its local snapshot, the
+    server updates its entries and responds with local server side entries that
+    are newer. Used for anti-entropy reconciliation.
+\end{itemize}
+
+The server maintains a map of subscriber channels protected by a mutex.
+\texttt{Broadcast} under read-lock retrieves the subscribed peers channels, then
+sends the update to each channel in a non locking manner. Slow subscribers
+drop updates relying on the next anti-entropy pass to recover.
+
+\subsection{Abstraction Boundary}
+
+A design decision was taken such all protobuf conversion
+(\texttt{ToProto}, \texttt{FromProto}, \texttt{SnapshotToProto}) is
+confined in the \texttt{network} package. The \texttt{Client} methods accept
+and return domain types (\texttt{types.Snapshot}, \texttt{types.SettingEntry}).
+Conversion to and from wire format is performed internally.
+
+This was not in the original design: an earlier iteration of \texttt{Client.Sync} and \texttt(Client.Broadcast)
+accepted \texttt{[]*userpb.SettingEntry} and \texttt{[]*userpb.ServerStateUpdate},
+thus requiring the controller to perform the conversion before each call.
+Refactor moved conversion dependency into network package, making the transport
+layer a true black box.
+
+\subsection{Reconnection and Keepalives}
+
+\texttt{Subscribe} method in \texttt{Client} wraps the streaming RPC in
+a retry loop: on any error, including server restart or network
+interruption, it waits three seconds and tries to re-establish the stream, first of all
+performing a Sync call to replay any entries missed during the outage. gRPC
+keepalive parameters are configured to detect dead connections.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Anti-Entropy Reconciliation}
+\label{sec:antientropy}
+% ─────────────────────────────────────────────────────────────────────────────
+
+Broadcast over gRPC is best-effort: a slow, offline or reconnecting subscriber
+may miss updates. A (state-based) CRDT that relies solely on broadcast for
+propagation is not eventually consistent in presence of message losses,
+nodes that miss a broadcast permanently diverge.
+
+Production CRDT deployments (Riak, Dynamo \cite{dynamo2007}) address this
+with a background anti-entropy mechanism: periodic full-state comparison
+identifies and repairs divergence independently of the broadcast path (\href{https://docs.riak.com/riak/kv/latest/learn/concepts/active-anti-entropy/index.html}{Riak AAE}).
+
+This system implements a lightweight variant: \texttt{syncAllPeers}
+is called periodically by the controller, this sends a local snapshot to
+each peer via the Sync RPC, updating peer entries and also local entries on returned values.
+This is sufficient for eventual consistency: even if every broadcast is dropped, the
+state will converge within one anti-entropy interval.
+
+There is an unimplemented enhancment regarding exchanges of unupdated KV pairs: currently
+can happen that 2 nodes at the same instant send a Sync request, this will on each node take a snapshot
+of local state and send it, then upon reciving the snapshot both nodes update their local entries, both send the updates
+that consider necessary to the other that already had applied them through the received snapshot.
+This is solvable but out of context for this project purpose. (eg. Jitter, follower/leader Sync, Merkle tree, Delta state ecc.)
+
+\begin{lstlisting}
+func (ctrl *Controller) syncAllPeers(ctx context.Context) {
+    snap := ctrl.crdt.Snapshot()
+    for _, client := range ctrl.clients {
+        go client.Sync(ctx, snap, func(e SettingEntry) {
+            ctrl.crdt.NotifyRemote(e)
+        })
+    }
+}
+\end{lstlisting}
+
+A 60-second interval was chosen as default: bounding divergence to one
+minute in worst-case broadcast loss and generating negligible network traffic
+for the cluster size targeted.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Crash-Safe Persistence}
+\label{sec:persistence}
+% ─────────────────────────────────────────────────────────────────────────────
+
+After each merge, CRDT serialises its state to \texttt{crdt\_state.json} found in the CRDT working directory. The naive approach
+using \texttt{os.WriteFile} is not crash-safe:
+if the process is killed after \texttt{WriteFile} had truncated the file and before
+the kernel had flushed all pages to disk, the node restarts with a
+corrupted state file.
+
+The correct pattern we used is the atomic rename:
+
+\begin{lstlisting}
+func atomicWriteFile(path string, data []byte) error {
+    tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp_*")
+    // ... write data to tmp, call tmp.Sync(), tmp.Close() ...
+    return os.Rename(tmp.Name(), path)
+}
+\end{lstlisting}
+
+Three properties make this safe:
+\begin{enumerate}
+  \item The temporary file is in the same directory of the target,
+    thus the rename is within a single filesystem so, atomic
+    at VFS layer on POSIX systems.
+  \item \texttt{tmp.Sync()} flushes file data to storage before
+    the rename, preventing data to be in the page cache during power-loss.
+  \item \texttt{os.Rename} is atomic on POSIX: any reader will see either the
+    old file or the new file, never a partially-written intermediate state.
+\end{enumerate}
+
+If the process crashes before the rename, the temporary file is
+left in the directory and cleaned up during the next \texttt{crdt.Init()} call,
+the original file remains intact.
+
+If the crash happens after state is persisted, \texttt{crdt.Reconcile} function is called
+one time in \texttt{controller.Run()} thus fully restoring local file integrity on startup.
+This is a limiting factor since on an already initialized node, if edits are made on the
+setting file, while the node is offline, these will be discarded in favour of last known state.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Garbage Collection}
+\label{sec:gc}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Problem}
+
+\textbf{Deleted entries} persist in CRDT state file indefinitely, this also
+happens for \textbf{temporary files} generated by \texttt{atomicRead} upon system
+crash. In systems with frequent delete-recreate cycles over large KV stores,
+tombstone accumulation brings two problems: memory leak over time,
+slower \texttt{Sync} and \texttt{crdt.Run} since larger snapshots are required.
+
+\subsection{Init cleanup}
+
+With regard to orphaned tmp files from \texttt{atomicRead}, the best solution in this case
+was also the easiest. Removal of all pattern matched tmp files on \texttt{crtd.Init} call.
+
+\subsection{TTL-Based Approach}
+
+The system also implements a TTL-based garbage collector. A ticker in the
+controller calls \texttt{crdt.PurgeTombstones(ttl)} passing the TTL.
+The CRDT actor then processes the request from \texttt{gcCh} channel monitored
+in its Run loop, thus maintaining the single-writer on \texttt{c.state}, removing
+tombstones with wallTime older than \texttt{now - ttl}.
+
+\begin{lstlisting}
+func (c *CRDT) purgeTombstones(ttl int64) {
+    diff := time.Now().UnixNano() - ttl
+    purged := 0
+    for key, entry := range c.state {
+        if entry.Deleted && entry.Clock.WallTime < diff {
+            delete(c.state, key)
+            purged++
+        }
+    }
+    if purged > 0 {
+        c.saveState()
+        log.Printf("tombstone GC: purged %d entries", purged)
+    }
+}
+\end{lstlisting}
+
+The default TTL is 14 days, twice the intended maximum node downtime
+after which an operator would investigate. This ensures that tombstones had been
+observed and applied by all healthy nodes via anti-entropy before it is removed.
+After a week of downtime a node supposively needs a re-initiation.
+
+\subsection{Safety Considerations}
+
+The TTL approach has one known failure point: if a node is offline for longer
+than the TTL and holds a non-deleted entry for a key tombstoned on all other nodes,
+the node will republish entry thus the deletion will appear to be reversed.
+This is solved by forcing the node to re-initialize with empty settings wether
+on startup the node follows \texttt{time.Now() - lastShutdownTime > TTL}
+
+There are also 2 known limitations we call sputtering cycle, determined by
+clock skew on machines running a tombstone garbage collection, then
+performing a Sync request. This will, from the skewed node, propagate again the GC'd entry.
+Moreover if a Sync request is performed just before a GC message is processed
+in the CRDT actor, Sync cycle brings with it GC'd entries creating a the same sputtering problem.
+These are mitigated through wire-layer filtering in the \texttt{Sync} handler.
+Before including a local entry in the response or applying an incoming remote entry,
+the handler skips any entry where \texttt{Deleted = true} and
+\texttt{now - wallTime > TTL}. Filtering is applied in both directions preventing resurrection
+of already-collected tombstones regardless of clock skew or snapshot-before-GC ordering
+between nodes.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Lifecycle and Error Handling}
+\label{sec:lifecycle}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Init / New Separation}
+
+The CRDT package exposes three functions:
+\begin{itemize}
+  \item \texttt{New(workDir)} instantiates a \texttt{*CRDT} value with
+    buffered channels. Pure allocation, no I/O, no error.
+  \item \texttt{Init()} loads an existing node: cleans up any orphaned
+    atomic-write tmp files, reads \texttt{node\_id}, and deserialises
+    \texttt{crdt\_state.json}. Returns an error if the working directory
+    has not been initialised (\emph{``run init first''}).
+  \item \texttt{InitNew(entries)} bootstraps a fresh node: creates the
+    working directory, writes \texttt{node\_id} if absent, stamps all
+    supplied entries with a fresh HLC tick, and persists the resulting
+    state. Used both at first-time setup and when forcing a clean slate.
+\end{itemize}
+
+The controller decides which path to take via \texttt{fixNodeState}:
+
+\begin{lstlisting}
+func (ctrl *Controller) fixNodeState(lastShutdown int64) error {
+    if lastShutdown != -1 &&
+        time.Now().UnixNano()-lastShutdown > ctrl.tombstoneTTL {
+        return ctrl.crdt.InitNew(types.Settings{})
+    }
+    return ctrl.crdt.Init()
+}
+\end{lstlisting}
+
+\texttt{checkLastShutdown()} returns \texttt{-1} when no shutdown file
+exists (first startup after \texttt{InitNew} or \texttt{InitEmptyNode}),
+causing \texttt{Init()} to load the freshly written state. If the node was
+offline longer than the tombstone TTL, \texttt{InitNew} reinitialises with
+an empty state making the node re-sync from peers rather than republishing
+entries already garbage collected cluster wide.
+\texttt{saveShutdownTime()} is deferred in \texttt{Run} and records the
+clean-shutdown timestamp used by the next invocation.
+
+\subsection{Error Propagation Principle}
+
+Functions in library packages (\texttt{crdt}, \texttt{network}) return
+errors rather than calling \texttt{log.Fatal} or \texttt{os.Exit} directly.
+\texttt{log.Fatal} belongs only at the application boundary (\texttt{main})
+where there is sufficient context to decide that an error is truly
+unrecoverable. This makes every package independently testable without the test process exiting.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Testing Strategy}
+\label{sec:testing}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Clock Injection}
+
+The \texttt{HLC} struct accepts a \texttt{Clock} interface via parametrized
+options at construction time. Tests inject \texttt{MockClock} to control
+wallTime advancement deterministically, covering edge cases such as
+backward clock steps, simultaneous ticks, and the case where system clock
+overtakes both local and received wallTime, resetting logical counter to zero.
+
+\subsection{Network Tests with bufconn}
+
+The \texttt{network} package is tested with \texttt{google.golang.org/grpc/test/bufconn},
+an in-memory listener that presents a real gRPC connection without opening
+any network socket. This allows tests to exercise the full gRPC stack without port
+allocation or network related problems.
+
+\subsection{Coverage}
+
+Line coverage targets were established and maintained:
+\texttt{types} at 100\%, \texttt{crdt} at approximately 90\%, \texttt{logic}
+at approximately 90\%, \texttt{network} at approximately 91\%, and
+\texttt{controller} at approximately 92\%. The remaining uncovered branches are structurally
+untestable without process-level mocking, \texttt{json.Marshal} on \texttt{map[string]string} (the error path never
+fires in the Go standard library), and the \texttt{fsnotify} closed-channel
+path (fires only after the watcher goroutine has already exited).
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Conclusion}
+\label{sec:conclusion}
+% ─────────────────────────────────────────────────────────────────────────────
+
+This paper presented a production-quality CRDT-based configuration
+synchronisation system. The core LWW CRDT provides convergence
+under concurrent writes and network partitions. The actor concurrency model
+eliminates lock contention. Anti-entropy reconciliation bounds
+divergence to Sync interval regardless of broadcast reliability.
+Atomic persistence through \texttt{os.Rename} prevents corruption on ungracefull shutdown.
+Tombstone GC fixes CRDT state growth for long-running deployments.
+
+Several design decisions evolved during implementation. The protobuf
+abstraction boundary was moved into the \texttt{network} package, removing
+transport-layer knowledge from the controller. Error propagation got modified
+to return \texttt{error} from library code and keep
+\texttt{log.Fatal} in the application entry-point. Forcefull init had ben added
+for nodes rejoining the cluster after more than TTL elapsed since last shutdown. A full
+reconciliation cycle had ben added upon start to make sure ungracefull shutdowns did not
+produce stale entries.
+
+The system does not address gossip-based broadcast efficiency, or metrics
+observability, all known gaps appropriate for future work in production
+deployments at larger scale.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{thebibliography}{00}
+
+  \bibitem{shapiro2011}
+  M.~Shapiro, N.~Pregui\c{c}a, C.~Baquero, and M.~Zawirski,
+  ``A comprehensive study of convergent and commutative replicated data types,''
+  INRIA, Tech. Rep. RR-7506, 2011.
+
+  \bibitem{kulkarni2014}
+  S.~S.~Kulkarni and M.~Demirbas,
+  ``Logical physical clocks and consistent snapshots in globally distributed
+  databases,''
+  in \emph{Proc. 18th Int. Conf. Principles of Distributed Systems (OPODIS)},
+  Cortina d'Ampezzo, Italy, Dec.\ 2014.
+
+  \bibitem{dynamo2007}
+  G.~DeCandia, D.~Hastorun, M.~Jampani, G.~Kakulapati, A.~Lakshman,
+  A.~Pilchin, S.~Sivasubramanian, P.~Vosshall, and W.~Vogels,
+  ``Dynamo: Amazon's highly available key-value store,''
+  in \emph{Proc. 21st ACM Symp. Operating Systems Principles (SOSP)},
+  Stevenson, WA, Oct.\ 2007, pp.\ 205--220.
+
+\end{thebibliography}
+
+\end{document}
