@@ -55,13 +55,13 @@
 			<div id="nav">
 				<select id="files">
 				
-				<option value="file0">github.com/gdr00/distributed-server-update/internal/controller/controller.go (92.3%)</option>
+				<option value="file0">github.com/gdr00/distributed-server-update/internal/controller/controller.go (90.6%)</option>
 				
 				<option value="file1">github.com/gdr00/distributed-server-update/internal/controller/types.go (100.0%)</option>
 				
 				<option value="file2">github.com/gdr00/distributed-server-update/internal/crdt/crdt.go (91.0%)</option>
 				
-				<option value="file3">github.com/gdr00/distributed-server-update/internal/logic/logic.go (88.6%)</option>
+				<option value="file3">github.com/gdr00/distributed-server-update/internal/logic/logic.go (89.9%)</option>
 				
 				<option value="file4">github.com/gdr00/distributed-server-update/internal/network/client.go (86.8%)</option>
 				
@@ -97,6 +97,8 @@ import (
         "log"
         "os"
         "path/filepath"
+        "strconv"
+        "strings"
         "time"
 
         "github.com/gdr00/distributed-server-update/internal/crdt"
@@ -117,26 +119,26 @@ type Controller struct {
 }
 
 func New(cfg Config) (*Controller, error) <span class="cov8" title="1">{
-        c := crdt.New(cfg.CRDTWorkdir)
-        if err := c.Init(); err != nil </span><span class="cov8" title="1">{
-                return nil, fmt.Errorf("failed to load crdt: %w", err)
-        }</span>
-
-        <span class="cov8" title="1">clients, err := network.NewClients(cfg.PeerAddresses)
+        clients, err := network.NewClients(cfg.PeerAddresses)
         if err != nil </span><span class="cov0" title="0">{
                 return nil, fmt.Errorf("failed to create peer clients: %w", err)
         }</span>
 
         <span class="cov8" title="1">ctrl := &amp;Controller{
                 cfg:                 cfg,
-                crdt:                c,
+                crdt:                crdt.New(cfg.CRDTWorkdir),
                 clients:             clients,
                 logic:               logic.New(cfg.SettingsPath),
                 tombstoneTTL:        int64(2 * 7 * 24 * time.Hour),
                 antiEntropyInterval: 60 * time.Second,
                 gcInterval:          24 * time.Hour,
         }
-        ctrl.network = network.NewUpdateServer(
+
+        if err := ctrl.fixNodeState(ctrl.checkLastShutdown()); err != nil </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("failed to initialize crdt: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">ctrl.network = network.NewUpdateServer(
                 func() types.Snapshot </span><span class="cov0" title="0">{
                         return ctrl.crdt.Snapshot()
                 }</span>,
@@ -181,10 +183,18 @@ func InitEmptyNode(cfg Config) error <span class="cov8" title="1">{
 
 func (ctrl *Controller) Run(ctx context.Context) error <span class="cov8" title="1">{
 
-        // reconcile settings file with CRDT state
+        defer ctrl.saveShutdownTime()
+
+        // reconcile settings file with CRDT state — full replacement to drop stale entries
+        settings := make(types.Settings)
         ctrl.crdt.Reconcile(func(entry types.SettingEntry) </span><span class="cov8" title="1">{
-                ctrl.logic.Write(entry)
-        }</span>)
+                if !entry.Deleted </span><span class="cov8" title="1">{
+                        settings[entry.Key] = entry.Value
+                }</span>
+        })
+        <span class="cov8" title="1">if err := ctrl.logic.Overwrite(settings); err != nil </span><span class="cov0" title="0">{
+                log.Printf("failed to reconcile settings file: %v", err)
+        }</span>
 
         <span class="cov8" title="1">if err := network.StartRPCServer(ctx, ctrl.network, ctrl.cfg.GRPCPort); err != nil </span><span class="cov8" title="1">{
                 return fmt.Errorf("failed to start RPC server: %w", err)
@@ -262,6 +272,40 @@ func (ctrl *Controller) runTombstoneGC(ctx context.Context) <span class="cov8" t
                         ctrl.crdt.PurgeTombstones(ctrl.tombstoneTTL)</span>
                 }
         }
+}
+
+func (ctrl *Controller) saveShutdownTime() <span class="cov8" title="1">{
+        path := filepath.Join(ctrl.cfg.CRDTWorkdir, "last_shutdown")
+        data := strconv.FormatInt(time.Now().UnixNano(), 10)
+        if err := os.WriteFile(path, []byte(data), 0600); err != nil </span><span class="cov0" title="0">{
+                log.Printf("failed to save shutdown time: %v", err)
+        }</span>
+}
+
+// checkLastShutdown returns the last clean shutdown time in nanoseconds,
+// or -1 if the file is missing (first startup after InitNew).
+func (ctrl *Controller) checkLastShutdown() int64 <span class="cov8" title="1">{
+        path := filepath.Join(ctrl.cfg.CRDTWorkdir, "last_shutdown")
+        data, err := os.ReadFile(path)
+        if err != nil </span><span class="cov8" title="1">{
+                return -1
+        }</span>
+        <span class="cov8" title="1">t, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+        if err != nil </span><span class="cov0" title="0">{
+                return -1
+        }</span>
+        <span class="cov8" title="1">return t</span>
+}
+
+// fixNodeState selects the CRDT init path based on last shutdown time.
+// -1 first startup, load normally
+// check if node passed past TTL GC period
+func (ctrl *Controller) fixNodeState(lastShutdown int64) error <span class="cov8" title="1">{
+        if lastShutdown != -1 &amp;&amp; time.Now().UnixNano()-lastShutdown &gt; ctrl.tombstoneTTL </span><span class="cov8" title="1">{
+                log.Printf("node offline longer than tombstone TTL, reinitializing from empty state")
+                return ctrl.crdt.InitNew(types.Settings{})
+        }</span>
+        <span class="cov8" title="1">return ctrl.crdt.Init()</span>
 }
 </pre>
 		
@@ -640,6 +684,23 @@ func (l *Logic) ReadSettings() (types.Settings, error) <span class="cov8" title=
         <span class="cov8" title="1">return settings, nil</span>
 }
 
+// Overwrite replaces the entire settings file with the given map.
+func (l *Logic) Overwrite(settings types.Settings) error <span class="cov8" title="1">{
+        l.mu.Lock()
+        defer l.mu.Unlock()
+
+        l.previous = make(types.Settings, len(settings))
+        for k, v := range settings </span><span class="cov8" title="1">{
+                l.previous[k] = v
+        }</span>
+
+        <span class="cov8" title="1">out, err := json.MarshalIndent(settings, "", "  ")
+        if err != nil </span><span class="cov0" title="0">{
+                return fmt.Errorf("failed to marshal settings: %w", err)
+        }</span>
+        <span class="cov8" title="1">return os.WriteFile(l.settingsPath, out, 0600)</span>
+}
+
 // Write entries to file
 func (l *Logic) Write(entry types.SettingEntry) error <span class="cov8" title="1">{
         l.mu.Lock()
@@ -691,7 +752,7 @@ func (l *Logic) Watch(ctx context.Context, onChange func(types.SettingEntry)) er
                                 return nil
                         }</span>
                         <span class="cov8" title="1">if event.Has(fsnotify.Write) </span><span class="cov8" title="1">{
-                                if debounce != nil </span><span class="cov0" title="0">{
+                                if debounce != nil </span><span class="cov8" title="1">{
                                         debounce.Stop()
                                 }</span>
                                 // avoid read on partial writes to file

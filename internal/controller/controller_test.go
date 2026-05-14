@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gdr00/distributed-server-update/internal/crdt"
 	"github.com/gdr00/distributed-server-update/internal/network"
 	"github.com/gdr00/distributed-server-update/internal/network/userpb"
 	"github.com/gdr00/distributed-server-update/internal/types"
@@ -170,6 +171,34 @@ func TestInitEmptyNode_CreatesWorkDir(t *testing.T) {
 	}
 }
 
+func TestRun_ReconcileDropsStaleSettingsEntries(t *testing.T) {
+	workDir, settingsPath := setupWorkDir(t, types.Settings{"theme": "dark"})
+
+	// inject a stale entry into settings.json that is NOT in CRDT state
+	data, _ := json.MarshalIndent(types.Settings{"theme": "dark", "stale": "value"}, "", "  ")
+	os.WriteFile(settingsPath, data, 0600)
+
+	ctrl := newTestController(t, workDir, settingsPath, 0, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- ctrl.Run(ctx) }()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	<-done
+
+	settings := make(map[string]string)
+	raw, _ := os.ReadFile(settingsPath)
+	json.Unmarshal(raw, &settings)
+
+	if _, exists := settings["stale"]; exists {
+		t.Fatal("expected stale entry to be removed by reconcile")
+	}
+	if settings["theme"] != "dark" {
+		t.Fatalf("expected theme=dark, got %v", settings)
+	}
+}
+
 // Run tests
 
 func TestRun_StartsAndStopsCleanly(t *testing.T) {
@@ -224,9 +253,10 @@ func TestRun_RemoteUpdateWritesToFile(t *testing.T) {
 	ctrl := newTestController(t, workDir, settingsPath, 0, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	done := make(chan struct{})
+	go func() { ctrl.Run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
 
-	go ctrl.Run(ctx)
 	time.Sleep(100 * time.Millisecond)
 
 	ctrl.crdt.NotifyRemote(types.SettingEntry{
@@ -548,5 +578,93 @@ func TestRunTombstoneGC_TickerFiresPurgeTombstones(t *testing.T) {
 
 	if entry := ctrl.crdt.Get("dead"); entry.Key != "" {
 		t.Fatalf("expected tombstone purged, still present: %+v", entry)
+	}
+}
+
+// shutdown time tests
+
+func TestSaveAndLoadShutdownTime(t *testing.T) {
+	workDir, settingsPath := setupWorkDir(t, types.Settings{})
+	ctrl := newTestController(t, workDir, settingsPath, 0, nil)
+
+	before := time.Now().UnixNano()
+	ctrl.saveShutdownTime()
+	after := time.Now().UnixNano()
+
+	got := ctrl.checkLastShutdown()
+	if got < before || got > after {
+		t.Fatalf("saved timestamp %d outside [%d, %d]", got, before, after)
+	}
+}
+
+func TestCheckLastShutdown_MissingFile(t *testing.T) {
+	workDir, settingsPath := setupWorkDir(t, types.Settings{})
+	ctrl := newTestController(t, workDir, settingsPath, 0, nil)
+	// no last_shutdown file written — fresh node
+	os.Remove(filepath.Join(workDir, "last_shutdown"))
+
+	if got := ctrl.checkLastShutdown(); got != -1 {
+		t.Fatalf("expected -1 for missing file, got %d", got)
+	}
+}
+
+func TestFixNodeState_RecentShutdown_LoadsExistingState(t *testing.T) {
+	workDir, settingsPath := setupWorkDir(t, types.Settings{"k": "v"})
+	ctrl := newTestController(t, workDir, settingsPath, 0, nil)
+
+	// re-initialize crdt (simulate restart with recent shutdown)
+	ctrl.crdt = crdt.New(workDir)
+	recent := time.Now().UnixNano() - int64(time.Hour)
+	if err := ctrl.fixNodeState(recent); err != nil {
+		t.Fatalf("fixNodeState: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ctrl.crdt.Run(ctx)
+	time.Sleep(20 * time.Millisecond)
+
+	if got := ctrl.crdt.Get("k"); got.Value != "v" {
+		t.Fatalf("expected existing state loaded, got %q", got.Value)
+	}
+}
+
+func TestFixNodeState_StaleShutdown_WipesState(t *testing.T) {
+	workDir, settingsPath := setupWorkDir(t, types.Settings{"k": "v"})
+	ctrl := newTestController(t, workDir, settingsPath, 0, nil)
+
+	// re-initialize crdt (simulate restart with stale shutdown)
+	ctrl.crdt = crdt.New(workDir)
+	stale := time.Now().UnixNano() - ctrl.tombstoneTTL - int64(time.Hour)
+	if err := ctrl.fixNodeState(stale); err != nil {
+		t.Fatalf("fixNodeState: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ctrl.crdt.Run(ctx)
+	time.Sleep(20 * time.Millisecond)
+
+	if got := ctrl.crdt.Get("k"); got.Key != "" {
+		t.Fatalf("expected empty state after stale shutdown, got %+v", got)
+	}
+}
+
+func TestFixNodeState_MissingFile_LoadsExistingState(t *testing.T) {
+	workDir, settingsPath := setupWorkDir(t, types.Settings{"k": "v"})
+	ctrl := newTestController(t, workDir, settingsPath, 0, nil)
+
+	ctrl.crdt = crdt.New(workDir)
+	if err := ctrl.fixNodeState(-1); err != nil {
+		t.Fatalf("fixNodeState with -1: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ctrl.crdt.Run(ctx)
+	time.Sleep(20 * time.Millisecond)
+
+	if got := ctrl.crdt.Get("k"); got.Value != "v" {
+		t.Fatalf("expected existing state loaded, got %q", got.Value)
 	}
 }

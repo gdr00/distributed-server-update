@@ -6,6 +6,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gdr00/distributed-server-update/internal/crdt"
@@ -26,11 +28,6 @@ type Controller struct {
 }
 
 func New(cfg Config) (*Controller, error) {
-	c := crdt.New(cfg.CRDTWorkdir)
-	if err := c.Init(); err != nil {
-		return nil, fmt.Errorf("failed to load crdt: %w", err)
-	}
-
 	clients, err := network.NewClients(cfg.PeerAddresses)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create peer clients: %w", err)
@@ -38,13 +35,18 @@ func New(cfg Config) (*Controller, error) {
 
 	ctrl := &Controller{
 		cfg:                 cfg,
-		crdt:                c,
+		crdt:                crdt.New(cfg.CRDTWorkdir),
 		clients:             clients,
 		logic:               logic.New(cfg.SettingsPath),
 		tombstoneTTL:        int64(2 * 7 * 24 * time.Hour),
 		antiEntropyInterval: 60 * time.Second,
 		gcInterval:          24 * time.Hour,
 	}
+
+	if err := ctrl.fixNodeState(ctrl.checkLastShutdown()); err != nil {
+		return nil, fmt.Errorf("failed to initialize crdt: %w", err)
+	}
+
 	ctrl.network = network.NewUpdateServer(
 		func() types.Snapshot {
 			return ctrl.crdt.Snapshot()
@@ -90,10 +92,18 @@ func InitEmptyNode(cfg Config) error {
 
 func (ctrl *Controller) Run(ctx context.Context) error {
 
-	// reconcile settings file with CRDT state
+	defer ctrl.saveShutdownTime()
+
+	// reconcile settings file with CRDT state — full replacement to drop stale entries
+	settings := make(types.Settings)
 	ctrl.crdt.Reconcile(func(entry types.SettingEntry) {
-		ctrl.logic.Write(entry)
+		if !entry.Deleted {
+			settings[entry.Key] = entry.Value
+		}
 	})
+	if err := ctrl.logic.Overwrite(settings); err != nil {
+		log.Printf("failed to reconcile settings file: %v", err)
+	}
 
 	if err := network.StartRPCServer(ctx, ctrl.network, ctrl.cfg.GRPCPort); err != nil {
 		return fmt.Errorf("failed to start RPC server: %w", err)
@@ -171,4 +181,38 @@ func (ctrl *Controller) runTombstoneGC(ctx context.Context) {
 			ctrl.crdt.PurgeTombstones(ctrl.tombstoneTTL)
 		}
 	}
+}
+
+func (ctrl *Controller) saveShutdownTime() {
+	path := filepath.Join(ctrl.cfg.CRDTWorkdir, "last_shutdown")
+	data := strconv.FormatInt(time.Now().UnixNano(), 10)
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		log.Printf("failed to save shutdown time: %v", err)
+	}
+}
+
+// checkLastShutdown returns the last clean shutdown time in nanoseconds,
+// or -1 if the file is missing (first startup after InitNew).
+func (ctrl *Controller) checkLastShutdown() int64 {
+	path := filepath.Join(ctrl.cfg.CRDTWorkdir, "last_shutdown")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return -1
+	}
+	t, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil {
+		return -1
+	}
+	return t
+}
+
+// fixNodeState selects the CRDT init path based on last shutdown time.
+// -1 first startup, load normally
+// check if node passed past TTL GC period
+func (ctrl *Controller) fixNodeState(lastShutdown int64) error {
+	if lastShutdown != -1 && time.Now().UnixNano()-lastShutdown > ctrl.tombstoneTTL {
+		log.Printf("node offline longer than tombstone TTL, reinitializing from empty state")
+		return ctrl.crdt.InitNew(types.Settings{})
+	}
+	return ctrl.crdt.Init()
 }

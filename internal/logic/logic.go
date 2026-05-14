@@ -48,6 +48,23 @@ func (l *Logic) ReadSettings() (types.Settings, error) {
 	return settings, nil
 }
 
+// Overwrite replaces the entire settings file with the given map.
+func (l *Logic) Overwrite(settings types.Settings) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.previous = make(types.Settings, len(settings))
+	for k, v := range settings {
+		l.previous[k] = v
+	}
+
+	out, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal settings: %w", err)
+	}
+	return os.WriteFile(l.settingsPath, out, 0600)
+}
+
 // Write entries to file
 func (l *Logic) Write(entry types.SettingEntry) error {
 	l.mu.Lock()

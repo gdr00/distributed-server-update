@@ -171,6 +171,56 @@ func TestWrite_CreatesFileIfMissing(t *testing.T) {
 	}
 }
 
+// Overwrite tests
+
+func TestOverwrite_ReplacesEntireFile(t *testing.T) {
+	l := setupLogic(t, types.Settings{"old": "value", "stale": "data"})
+
+	err := l.Overwrite(types.Settings{"new": "entry"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	settings, _ := l.ReadSettings()
+	if _, exists := settings["old"]; exists {
+		t.Fatal("expected stale key 'old' to be removed")
+	}
+	if _, exists := settings["stale"]; exists {
+		t.Fatal("expected stale key 'stale' to be removed")
+	}
+	if settings["new"] != "entry" {
+		t.Fatalf("expected new=entry, got %v", settings)
+	}
+}
+
+func TestOverwrite_EmptyMapClearsFile(t *testing.T) {
+	l := setupLogic(t, types.Settings{"a": "1", "b": "2"})
+
+	if err := l.Overwrite(types.Settings{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	settings, _ := l.ReadSettings()
+	if len(settings) != 0 {
+		t.Fatalf("expected empty settings, got %v", settings)
+	}
+}
+
+func TestOverwrite_UpdatesPreviousCache(t *testing.T) {
+	l := setupLogic(t, types.Settings{"a": "old"})
+
+	l.Overwrite(types.Settings{"a": "new", "b": "val"})
+
+	// simulate file change that only touches "b" — previous cache must be up to date
+	var changes []types.SettingEntry
+	os.WriteFile(l.settingsPath, []byte(`{"a":"new"}`), 0600)
+	l.applyChanges(func(e types.SettingEntry) { changes = append(changes, e) })
+
+	if len(changes) != 1 || changes[0].Key != "b" || !changes[0].Deleted {
+		t.Fatalf("expected only deletion of 'b', got %+v", changes)
+	}
+}
+
 // Watch tests
 
 func TestWatch_DetectsFileChange(t *testing.T) {
