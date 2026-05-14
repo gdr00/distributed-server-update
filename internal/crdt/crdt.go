@@ -50,6 +50,12 @@ func New(workDir string) *CRDT {
 
 func (c *CRDT) Init() error {
 
+	// GC for orphaned atomicWrites tmp files
+	matches, _ := filepath.Glob(filepath.Join(c.dir, ".tmp_*"))
+	for _, f := range matches {
+		os.Remove(f)
+	}
+
 	nodeID, err := loadNodeID(c.dir)
 	if err != nil {
 		// generate and save node_id
