@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gdr00/distributed-server-update/internal/types"
@@ -34,6 +35,7 @@ type CRDT struct {
 	gcCh        chan int64                    // channel to trigger tombstone GC with a TTL in nanoseconds
 	OnBroadcast func(types.SettingEntry)      // injected callback for outgoing broadcasts
 	OnFileSync  func(types.SettingEntry)      // injected callback for file writes
+	started     atomic.Bool
 }
 
 func New(workDir string) *CRDT {
@@ -154,6 +156,15 @@ func (c *CRDT) Snapshot() types.Snapshot {
 	return <-req.resp
 }
 
+func (c *CRDT) Reconcile(fn func(types.SettingEntry)) {
+	if c.started.Load() {
+		panic("Reconcile called after Run")
+	}
+	for _, entry := range c.state {
+		fn(entry)
+	}
+}
+
 // Merge 2 edits with LWW logic
 // true when incoming is newer
 func (c *CRDT) merge(incoming types.SettingEntry) (changed bool) {
@@ -166,6 +177,7 @@ func (c *CRDT) merge(incoming types.SettingEntry) (changed bool) {
 }
 
 func (c *CRDT) Run(ctx context.Context) {
+	c.started.Store(true)
 	for {
 		select {
 		// I have incoming changes from local state

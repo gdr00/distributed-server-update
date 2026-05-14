@@ -90,6 +90,11 @@ func InitEmptyNode(cfg Config) error {
 
 func (ctrl *Controller) Run(ctx context.Context) error {
 
+	// reconcile settings file with CRDT state
+	ctrl.crdt.Reconcile(func(entry types.SettingEntry) {
+		ctrl.logic.Write(entry)
+	})
+
 	if err := network.StartRPCServer(ctx, ctrl.network, ctrl.cfg.GRPCPort); err != nil {
 		return fmt.Errorf("failed to start RPC server: %w", err)
 	}

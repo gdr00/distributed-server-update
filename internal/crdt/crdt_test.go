@@ -538,6 +538,78 @@ func TestPurgeTombstones_EmptyStateIsNoop(t *testing.T) {
 	time.Sleep(100 * time.Millisecond) // no panic
 }
 
+// Reconcile tests
+
+func TestReconcile_CallsCallbackForAllEntries(t *testing.T) {
+	c, _ := setupCRDT(t)
+	c.state["a"] = entry("a", "1", hlc(100, 0, "n"))
+	c.state["b"] = entry("b", "2", hlc(200, 0, "n"))
+
+	seen := map[string]string{}
+	c.Reconcile(func(e types.SettingEntry) {
+		seen[e.Key] = e.Value
+	})
+
+	if seen["a"] != "1" || seen["b"] != "2" {
+		t.Fatalf("expected all entries, got %v", seen)
+	}
+}
+
+func TestReconcile_EmptyStateIsNoop(t *testing.T) {
+	c, _ := setupCRDT(t)
+	called := 0
+	c.Reconcile(func(types.SettingEntry) { called++ })
+	if called != 0 {
+		t.Fatalf("expected 0 calls for empty state, got %d", called)
+	}
+}
+
+func TestReconcile_PanicsAfterRun(t *testing.T) {
+	c, _ := setupCRDT(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+	time.Sleep(10 * time.Millisecond)
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic when Reconcile called after Run")
+		}
+	}()
+	c.Reconcile(func(types.SettingEntry) {})
+}
+
+// Init tmp cleanup tests
+
+func TestInit_CleansTmpFiles(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, ".tmp_abc"), []byte("orphan"), 0600)
+	os.WriteFile(filepath.Join(dir, ".tmp_xyz"), []byte("orphan"), 0600)
+	os.WriteFile(filepath.Join(dir, "node_id"), []byte("test-node"), 0600)
+	os.WriteFile(filepath.Join(dir, "crdt_state.json"), []byte("{}"), 0600)
+
+	c := New(dir)
+	if err := c.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	matches, _ := filepath.Glob(filepath.Join(dir, ".tmp_*"))
+	if len(matches) != 0 {
+		t.Fatalf("expected tmp files cleaned up, found: %v", matches)
+	}
+}
+
+func TestInit_NoTmpFilesIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "node_id"), []byte("test-node"), 0600)
+	os.WriteFile(filepath.Join(dir, "crdt_state.json"), []byte("{}"), 0600)
+
+	c := New(dir)
+	if err := c.Init(); err != nil {
+		t.Fatalf("Init() with no tmp files error = %v", err)
+	}
+}
+
 func TestPurgeTombstones_PersistsStateAfterPurge(t *testing.T) {
 	c, dir := setupCRDT(t)
 	ctx, cancel := context.WithCancel(context.Background())

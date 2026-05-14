@@ -55,11 +55,11 @@
 			<div id="nav">
 				<select id="files">
 				
-				<option value="file0">github.com/gdr00/distributed-server-update/internal/controller/controller.go (92.1%)</option>
+				<option value="file0">github.com/gdr00/distributed-server-update/internal/controller/controller.go (92.3%)</option>
 				
 				<option value="file1">github.com/gdr00/distributed-server-update/internal/controller/types.go (100.0%)</option>
 				
-				<option value="file2">github.com/gdr00/distributed-server-update/internal/crdt/crdt.go (90.4%)</option>
+				<option value="file2">github.com/gdr00/distributed-server-update/internal/crdt/crdt.go (91.0%)</option>
 				
 				<option value="file3">github.com/gdr00/distributed-server-update/internal/logic/logic.go (88.6%)</option>
 				
@@ -181,7 +181,12 @@ func InitEmptyNode(cfg Config) error <span class="cov8" title="1">{
 
 func (ctrl *Controller) Run(ctx context.Context) error <span class="cov8" title="1">{
 
-        if err := network.StartRPCServer(ctx, ctrl.network, ctrl.cfg.GRPCPort); err != nil </span><span class="cov8" title="1">{
+        // reconcile settings file with CRDT state
+        ctrl.crdt.Reconcile(func(entry types.SettingEntry) </span><span class="cov8" title="1">{
+                ctrl.logic.Write(entry)
+        }</span>)
+
+        <span class="cov8" title="1">if err := network.StartRPCServer(ctx, ctrl.network, ctrl.cfg.GRPCPort); err != nil </span><span class="cov8" title="1">{
                 return fmt.Errorf("failed to start RPC server: %w", err)
         }</span>
 
@@ -302,6 +307,7 @@ import (
         "os"
         "path/filepath"
         "strings"
+        "sync/atomic"
         "time"
 
         "github.com/gdr00/distributed-server-update/internal/types"
@@ -327,6 +333,7 @@ type CRDT struct {
         gcCh        chan int64                    // channel to trigger tombstone GC with a TTL in nanoseconds
         OnBroadcast func(types.SettingEntry)      // injected callback for outgoing broadcasts
         OnFileSync  func(types.SettingEntry)      // injected callback for file writes
+        started     atomic.Bool
 }
 
 func New(workDir string) *CRDT <span class="cov8" title="1">{
@@ -343,7 +350,13 @@ func New(workDir string) *CRDT <span class="cov8" title="1">{
 
 func (c *CRDT) Init() error <span class="cov8" title="1">{
 
-        nodeID, err := loadNodeID(c.dir)
+        // GC for orphaned atomicWrites tmp files
+        matches, _ := filepath.Glob(filepath.Join(c.dir, ".tmp_*"))
+        for _, f := range matches </span><span class="cov8" title="1">{
+                os.Remove(f)
+        }</span>
+
+        <span class="cov8" title="1">nodeID, err := loadNodeID(c.dir)
         if err != nil </span><span class="cov8" title="1">{
                 // generate and save node_id
                 nodeID = uuid.New().String()
@@ -441,6 +454,15 @@ func (c *CRDT) Snapshot() types.Snapshot <span class="cov8" title="1">{
         return &lt;-req.resp
 }</span>
 
+func (c *CRDT) Reconcile(fn func(types.SettingEntry)) <span class="cov8" title="1">{
+        if c.started.Load() </span><span class="cov8" title="1">{
+                panic("Reconcile called after Run")</span>
+        }
+        <span class="cov8" title="1">for _, entry := range c.state </span><span class="cov8" title="1">{
+                fn(entry)
+        }</span>
+}
+
 // Merge 2 edits with LWW logic
 // true when incoming is newer
 func (c *CRDT) merge(incoming types.SettingEntry) (changed bool) <span class="cov8" title="1">{
@@ -453,6 +475,7 @@ func (c *CRDT) merge(incoming types.SettingEntry) (changed bool) <span class="co
 }
 
 func (c *CRDT) Run(ctx context.Context) <span class="cov8" title="1">{
+        c.started.Store(true)
         for </span><span class="cov8" title="1">{
                 select </span>{
                 // I have incoming changes from local state
