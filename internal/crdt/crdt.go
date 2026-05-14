@@ -79,6 +79,12 @@ func (c *CRDT) Init() error {
 
 func (c *CRDT) InitNew(entries types.Settings) error {
 
+	// GC for orphaned atomicWrites tmp files
+	matches, _ := filepath.Glob(filepath.Join(c.dir, ".tmp_*"))
+	for _, f := range matches {
+		os.Remove(f)
+	}
+
 	if err := os.MkdirAll(c.dir, 0700); err != nil {
 		return fmt.Errorf("failed to create config dir: %w", err)
 	}

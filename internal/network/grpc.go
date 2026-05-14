@@ -3,6 +3,7 @@ package network
 import (
 	"context"
 	"sync"
+	"time"
 
 	"google.golang.org/protobuf/types/known/emptypb"
 
@@ -17,13 +18,15 @@ type UpdateServer struct {
 	nextSubID   int
 	getSnapshot func() types.Snapshot
 	applyRemote func(types.SettingEntry)
+	wallTTL     int64
 }
 
-func NewUpdateServer(getSnapshot func() types.Snapshot, applyRemote func(types.SettingEntry)) *UpdateServer {
+func NewUpdateServer(getSnapshot func() types.Snapshot, applyRemote func(types.SettingEntry), wallTTL int64) *UpdateServer {
 	return &UpdateServer{
 		subscribers: make(map[int]chan *userpb.ServerStateUpdate),
 		getSnapshot: getSnapshot,
 		applyRemote: applyRemote,
+		wallTTL:     wallTTL,
 	}
 }
 
@@ -46,6 +49,7 @@ func (s *UpdateServer) Broadcast(entry types.SettingEntry) {
 
 func (s *UpdateServer) Sync(ctx context.Context, req *userpb.SyncRequest) (*userpb.SyncResponse, error) {
 	snapshot := s.getSnapshot()
+	now := time.Now().UnixNano()
 
 	incoming := make(map[string]types.SettingEntry, len(req.LocalState))
 	for _, e := range req.LocalState {
@@ -54,6 +58,9 @@ func (s *UpdateServer) Sync(ctx context.Context, req *userpb.SyncRequest) (*user
 
 	var newer []*userpb.SettingEntry
 	for _, local := range snapshot.Entries {
+		if local.Deleted && now-local.Clock.WallTime > s.wallTTL {
+			continue
+		}
 		remote, exists := incoming[local.Key]
 		if !exists || remote.Clock.Before(local.Clock) {
 			newer = append(newer, ToProto(local))
@@ -62,6 +69,9 @@ func (s *UpdateServer) Sync(ctx context.Context, req *userpb.SyncRequest) (*user
 
 	if s.applyRemote != nil {
 		for _, remote := range incoming {
+			if remote.Deleted && now-remote.Clock.WallTime > s.wallTTL {
+				continue
+			}
 			local, exists := snapshot.Entries[remote.Key]
 			if !exists || local.Clock.Before(remote.Clock) {
 				s.applyRemote(remote)

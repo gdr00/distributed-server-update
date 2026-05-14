@@ -53,7 +53,8 @@ func New(cfg Config) (*Controller, error) {
 		},
 		func(entry types.SettingEntry) {
 			ctrl.crdt.NotifyRemote(entry)
-		})
+		},
+		ctrl.tombstoneTTL)
 	return ctrl, nil
 }
 

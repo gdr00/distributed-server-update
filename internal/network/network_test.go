@@ -17,6 +17,8 @@ import (
 
 const bufSize = 1024 * 1024
 
+var testWallTTL = int64(14 * 24 * time.Hour)
+
 // startTestServer spins up a real gRPC server over an in-memory bufconn.
 // Returns the server, a client connected to it, and a cancel func.
 func startTestServer(t *testing.T, snapshot func() types.Snapshot) (*UpdateServer, userpb.UpdateServiceClient, func()) {
@@ -29,7 +31,7 @@ func startTestServer(t *testing.T, snapshot func() types.Snapshot) (*UpdateServe
 	}
 
 	lis := bufconn.Listen(bufSize)
-	srv := NewUpdateServer(snapshot, nil)
+	srv := NewUpdateServer(snapshot, nil, testWallTTL)
 
 	grpcSrv := grpc.NewServer()
 	userpb.RegisterUpdateServiceServer(grpcSrv, srv)
@@ -73,7 +75,7 @@ func startTestServerWithLis(t *testing.T, snapshot func() types.Snapshot) (*Upda
 		}
 	}
 	lis := bufconn.Listen(bufSize)
-	srv := NewUpdateServer(snapshot, nil)
+	srv := NewUpdateServer(snapshot, nil, testWallTTL)
 	grpcSrv := grpc.NewServer()
 	userpb.RegisterUpdateServiceServer(grpcSrv, srv)
 	go grpcSrv.Serve(lis)
@@ -222,7 +224,7 @@ func TestBroadcast_MultipleSubscribers(t *testing.T) {
 func TestBroadcast_NoSubscribersIsNoop(t *testing.T) {
 	srv := NewUpdateServer(func() types.Snapshot {
 		return types.Snapshot{Entries: map[string]types.SettingEntry{}}
-	}, nil)
+	}, nil, testWallTTL)
 	// should not panic or block
 	srv.Broadcast(entry("theme", "dark", hlc(100, 0, "A")))
 }
@@ -337,7 +339,7 @@ func TestSync_ServerAppliesIncomingNewerEntry(t *testing.T) {
 	lis := bufconn.Listen(bufSize)
 	srv := NewUpdateServer(func() types.Snapshot { return serverState }, func(e types.SettingEntry) {
 		applied <- e
-	})
+	}, testWallTTL)
 	grpcSrv := grpc.NewServer()
 	userpb.RegisterUpdateServiceServer(grpcSrv, srv)
 	go grpcSrv.Serve(lis)
@@ -377,7 +379,7 @@ func TestSync_ServerSkipsIncomingOlderEntry(t *testing.T) {
 	lis := bufconn.Listen(bufSize)
 	srv := NewUpdateServer(func() types.Snapshot { return serverState }, func(e types.SettingEntry) {
 		applied <- e
-	})
+	}, testWallTTL)
 	grpcSrv := grpc.NewServer()
 	userpb.RegisterUpdateServiceServer(grpcSrv, srv)
 	go grpcSrv.Serve(lis)
@@ -412,7 +414,7 @@ func TestSync_ServerAppliesIncomingMissingKey(t *testing.T) {
 		return types.Snapshot{Entries: map[string]types.SettingEntry{}}
 	}, func(e types.SettingEntry) {
 		applied <- e
-	})
+	}, testWallTTL)
 	grpcSrv := grpc.NewServer()
 	userpb.RegisterUpdateServiceServer(grpcSrv, srv)
 	go grpcSrv.Serve(lis)
@@ -474,7 +476,7 @@ func TestSync_BothDirectionsExchanged(t *testing.T) {
 	lis := bufconn.Listen(bufSize)
 	srv := NewUpdateServer(func() types.Snapshot { return serverState }, func(e types.SettingEntry) {
 		applied <- e
-	})
+	}, testWallTTL)
 	grpcSrv := grpc.NewServer()
 	userpb.RegisterUpdateServiceServer(grpcSrv, srv)
 	go grpcSrv.Serve(lis)
@@ -532,7 +534,7 @@ func TestSync_ServerSkipsEqualClockEntry(t *testing.T) {
 	lis := bufconn.Listen(bufSize)
 	srv := NewUpdateServer(func() types.Snapshot { return serverState }, func(e types.SettingEntry) {
 		applied <- e
-	})
+	}, testWallTTL)
 	grpcSrv := grpc.NewServer()
 	userpb.RegisterUpdateServiceServer(grpcSrv, srv)
 	go grpcSrv.Serve(lis)
@@ -712,6 +714,71 @@ func TestClient_Subscribe(t *testing.T) {
 	}
 }
 
+// ── Sync TTL filtering ────────────────────────────────────────────────────────
+
+func TestSync_GCEligibleTombstoneNotSentToClient(t *testing.T) {
+	ttl := int64(time.Hour)
+	oldClock := hlc(time.Now().UnixNano()-int64(2*time.Hour), 0, "server")
+	tombstone := types.SettingEntry{Key: "theme", Deleted: true, Clock: oldClock}
+
+	serverState := types.Snapshot{
+		Entries: map[string]types.SettingEntry{"theme": tombstone},
+	}
+
+	lis := bufconn.Listen(bufSize)
+	srv := NewUpdateServer(func() types.Snapshot { return serverState }, nil, ttl)
+	grpcSrv := grpc.NewServer()
+	userpb.RegisterUpdateServiceServer(grpcSrv, srv)
+	go grpcSrv.Serve(lis)
+	defer grpcSrv.Stop()
+
+	c := newBufconnClient(t, lis)
+	defer c.Close()
+
+	resp, err := c.client.Sync(context.Background(), &userpb.SyncRequest{LocalState: nil})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.NewerEntries) != 0 {
+		t.Fatalf("expected GC-eligible tombstone to be filtered, got %d entries", len(resp.NewerEntries))
+	}
+}
+
+func TestSync_GCEligibleTombstoneNotAppliedFromClient(t *testing.T) {
+	ttl := int64(time.Hour)
+	oldClock := hlc(time.Now().UnixNano()-int64(2*time.Hour), 0, "client")
+
+	applied := make(chan types.SettingEntry, 1)
+	lis := bufconn.Listen(bufSize)
+	srv := NewUpdateServer(func() types.Snapshot {
+		return types.Snapshot{Entries: map[string]types.SettingEntry{}}
+	}, func(e types.SettingEntry) {
+		applied <- e
+	}, ttl)
+	grpcSrv := grpc.NewServer()
+	userpb.RegisterUpdateServiceServer(grpcSrv, srv)
+	go grpcSrv.Serve(lis)
+	defer grpcSrv.Stop()
+
+	c := newBufconnClient(t, lis)
+	defer c.Close()
+
+	tombstone := types.SettingEntry{Key: "theme", Deleted: true, Clock: oldClock}
+	_, err := c.client.Sync(context.Background(), &userpb.SyncRequest{
+		LocalState: []*userpb.SettingEntry{ToProto(tombstone)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case e := <-applied:
+		t.Fatalf("GC-eligible tombstone should not be applied, got: %+v", e)
+	case <-time.After(100 * time.Millisecond):
+		// correct: filtered
+	}
+}
+
 // ── StartRPCServer ────────────────────────────────────────────────────────────
 
 func TestStartRPCServer_StartsAndStops(t *testing.T) {
@@ -719,7 +786,7 @@ func TestStartRPCServer_StartsAndStops(t *testing.T) {
 
 	srv := NewUpdateServer(func() types.Snapshot {
 		return types.Snapshot{Entries: map[string]types.SettingEntry{}}
-	}, nil)
+	}, nil, testWallTTL)
 
 	if err := StartRPCServer(ctx, srv, 0); err != nil {
 		t.Fatalf("unexpected error: %v", err)

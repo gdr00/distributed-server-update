@@ -55,17 +55,17 @@
 			<div id="nav">
 				<select id="files">
 				
-				<option value="file0">github.com/gdr00/distributed-server-update/internal/controller/controller.go (90.6%)</option>
+				<option value="file0">github.com/gdr00/distributed-server-update/internal/controller/controller.go (91.8%)</option>
 				
 				<option value="file1">github.com/gdr00/distributed-server-update/internal/controller/types.go (100.0%)</option>
 				
-				<option value="file2">github.com/gdr00/distributed-server-update/internal/crdt/crdt.go (91.0%)</option>
+				<option value="file2">github.com/gdr00/distributed-server-update/internal/crdt/crdt.go (90.4%)</option>
 				
 				<option value="file3">github.com/gdr00/distributed-server-update/internal/logic/logic.go (89.9%)</option>
 				
 				<option value="file4">github.com/gdr00/distributed-server-update/internal/network/client.go (86.8%)</option>
 				
-				<option value="file5">github.com/gdr00/distributed-server-update/internal/network/grpc.go (95.8%)</option>
+				<option value="file5">github.com/gdr00/distributed-server-update/internal/network/grpc.go (96.2%)</option>
 				
 				<option value="file6">github.com/gdr00/distributed-server-update/internal/network/server.go (84.6%)</option>
 				
@@ -74,8 +74,6 @@
 				<option value="file8">github.com/gdr00/distributed-server-update/internal/network/userpb/update_state_grpc.pb.go (0.0%)</option>
 				
 				<option value="file9">github.com/gdr00/distributed-server-update/internal/types/types.go (100.0%)</option>
-				
-				<option value="file10">github.com/gdr00/distributed-server-update/main/main.go (0.0%)</option>
 				
 				</select>
 			</div>
@@ -144,7 +142,8 @@ func New(cfg Config) (*Controller, error) <span class="cov8" title="1">{
                 }</span>,
                 func(entry types.SettingEntry) <span class="cov0" title="0">{
                         ctrl.crdt.NotifyRemote(entry)
-                }</span>)
+                }</span>,
+                ctrl.tombstoneTTL)
         <span class="cov8" title="1">return ctrl, nil</span>
 }
 
@@ -277,7 +276,7 @@ func (ctrl *Controller) runTombstoneGC(ctx context.Context) <span class="cov8" t
 func (ctrl *Controller) saveShutdownTime() <span class="cov8" title="1">{
         path := filepath.Join(ctrl.cfg.CRDTWorkdir, "last_shutdown")
         data := strconv.FormatInt(time.Now().UnixNano(), 10)
-        if err := os.WriteFile(path, []byte(data), 0600); err != nil </span><span class="cov0" title="0">{
+        if err := os.WriteFile(path, []byte(data), 0600); err != nil </span><span class="cov8" title="1">{
                 log.Printf("failed to save shutdown time: %v", err)
         }</span>
 }
@@ -421,7 +420,13 @@ func (c *CRDT) Init() error <span class="cov8" title="1">{
 
 func (c *CRDT) InitNew(entries types.Settings) error <span class="cov8" title="1">{
 
-        if err := os.MkdirAll(c.dir, 0700); err != nil </span><span class="cov8" title="1">{
+        // GC for orphaned atomicWrites tmp files
+        matches, _ := filepath.Glob(filepath.Join(c.dir, ".tmp_*"))
+        for _, f := range matches </span><span class="cov0" title="0">{
+                os.Remove(f)
+        }</span>
+
+        <span class="cov8" title="1">if err := os.MkdirAll(c.dir, 0700); err != nil </span><span class="cov8" title="1">{
                 return fmt.Errorf("failed to create config dir: %w", err)
         }</span>
 
@@ -909,6 +914,7 @@ func (c *Client) runStream(ctx context.Context, localSnapshot types.Snapshot, on
 import (
         "context"
         "sync"
+        "time"
 
         "google.golang.org/protobuf/types/known/emptypb"
 
@@ -923,13 +929,15 @@ type UpdateServer struct {
         nextSubID   int
         getSnapshot func() types.Snapshot
         applyRemote func(types.SettingEntry)
+        wallTTL     int64
 }
 
-func NewUpdateServer(getSnapshot func() types.Snapshot, applyRemote func(types.SettingEntry)) *UpdateServer <span class="cov8" title="1">{
+func NewUpdateServer(getSnapshot func() types.Snapshot, applyRemote func(types.SettingEntry), wallTTL int64) *UpdateServer <span class="cov8" title="1">{
         return &amp;UpdateServer{
                 subscribers: make(map[int]chan *userpb.ServerStateUpdate),
                 getSnapshot: getSnapshot,
                 applyRemote: applyRemote,
+                wallTTL:     wallTTL,
         }
 }</span>
 
@@ -952,6 +960,7 @@ func (s *UpdateServer) Broadcast(entry types.SettingEntry) <span class="cov8" ti
 
 func (s *UpdateServer) Sync(ctx context.Context, req *userpb.SyncRequest) (*userpb.SyncResponse, error) <span class="cov8" title="1">{
         snapshot := s.getSnapshot()
+        now := time.Now().UnixNano()
 
         incoming := make(map[string]types.SettingEntry, len(req.LocalState))
         for _, e := range req.LocalState </span><span class="cov8" title="1">{
@@ -960,7 +969,10 @@ func (s *UpdateServer) Sync(ctx context.Context, req *userpb.SyncRequest) (*user
 
         <span class="cov8" title="1">var newer []*userpb.SettingEntry
         for _, local := range snapshot.Entries </span><span class="cov8" title="1">{
-                remote, exists := incoming[local.Key]
+                if local.Deleted &amp;&amp; now-local.Clock.WallTime &gt; s.wallTTL </span><span class="cov8" title="1">{
+                        continue</span>
+                }
+                <span class="cov8" title="1">remote, exists := incoming[local.Key]
                 if !exists || remote.Clock.Before(local.Clock) </span><span class="cov8" title="1">{
                         newer = append(newer, ToProto(local))
                 }</span>
@@ -968,7 +980,10 @@ func (s *UpdateServer) Sync(ctx context.Context, req *userpb.SyncRequest) (*user
 
         <span class="cov8" title="1">if s.applyRemote != nil </span><span class="cov8" title="1">{
                 for _, remote := range incoming </span><span class="cov8" title="1">{
-                        local, exists := snapshot.Entries[remote.Key]
+                        if remote.Deleted &amp;&amp; now-remote.Clock.WallTime &gt; s.wallTTL </span><span class="cov8" title="1">{
+                                continue</span>
+                        }
+                        <span class="cov8" title="1">local, exists := snapshot.Entries[remote.Key]
                         if !exists || local.Clock.Before(remote.Clock) </span><span class="cov8" title="1">{
                                 s.applyRemote(remote)
                         }</span>
@@ -1767,72 +1782,6 @@ type SettingEntry struct {
 
 type Snapshot struct {
         Entries map[string]SettingEntry
-}
-</pre>
-		
-		<pre class="file" id="file10" style="display: none">package main
-
-import (
-        "context"
-        "flag"
-        "fmt"
-        "log"
-        "os"
-        "os/signal"
-
-        "github.com/gdr00/distributed-server-update/internal/controller"
-)
-
-func main() <span class="cov0" title="0">{
-
-        initCmd := flag.NewFlagSet("init", flag.ExitOnError)
-        initConfig := initCmd.String("config", "", "path to config file")
-        initEmpty := initCmd.Bool("empty", false, "init empty replica")
-
-        startConfig := flag.String("config", "", "path to config file")
-
-        if len(os.Args) &gt; 1 &amp;&amp; os.Args[1] == "init" </span><span class="cov0" title="0">{
-                initCmd.Parse(os.Args[2:])
-                cfg, err := controller.LoadConfig(*initConfig)
-                if err != nil </span><span class="cov0" title="0">{
-                        log.Fatal(err)
-                }</span>
-                <span class="cov0" title="0">if *initEmpty </span><span class="cov0" title="0">{
-                        // just create node_id and empty crdt_state.json
-                        if err := controller.InitEmptyNode(cfg); err != nil </span><span class="cov0" title="0">{
-                                log.Fatal(err)
-                        }</span>
-                } else<span class="cov0" title="0"> {
-                        if err := controller.InitNode(cfg); err != nil </span><span class="cov0" title="0">{
-                                log.Fatal(err)
-                        }</span>
-                }
-                <span class="cov0" title="0">return</span>
-        }
-
-        <span class="cov0" title="0">flag.Parse()
-        if *startConfig == "" </span><span class="cov0" title="0">{
-                fmt.Fprintf(os.Stderr, "Usage: %s --config=&lt;path&gt;\n", os.Args[0])
-                flag.PrintDefaults()
-                os.Exit(1)
-        }</span>
-        <span class="cov0" title="0">cfg, err := controller.LoadConfig(*startConfig)
-        if err != nil </span><span class="cov0" title="0">{
-                log.Fatal(err)
-        }</span>
-
-        <span class="cov0" title="0">ctrl, err := controller.New(cfg)
-        if err != nil </span><span class="cov0" title="0">{
-                log.Fatal(err)
-        }</span>
-
-        <span class="cov0" title="0">ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-        defer cancel()
-
-        if err := ctrl.Run(ctx); err != nil </span><span class="cov0" title="0">{
-                log.Fatal(err)
-        }</span>
-
 }
 </pre>
 		

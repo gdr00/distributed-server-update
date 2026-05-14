@@ -451,7 +451,7 @@ func startPeerServer(t *testing.T, snap types.Snapshot) string {
 	if err != nil {
 		t.Fatalf("failed to listen: %v", err)
 	}
-	srv := network.NewUpdateServer(func() types.Snapshot { return snap }, nil)
+	srv := network.NewUpdateServer(func() types.Snapshot { return snap }, nil, int64(14*24*time.Hour))
 	grpcSrv := grpc.NewServer()
 	userpb.RegisterUpdateServiceServer(grpcSrv, srv)
 	go grpcSrv.Serve(lis)
