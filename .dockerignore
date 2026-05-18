@@ -1,0 +1,3 @@
+tests/
+docker/
+coverage_report.html
