@@ -1,5 +1,6 @@
 volumes:
   server-bin:
+  go-module-cache:
 
 services:
   builder:
@@ -46,18 +47,24 @@ services:
         condition: service_completed_successfully
 
   node1:
-      image: alpine:latest
-      user: "1000:1000"
-      command: /app/server --config=/config/cfg.json
-      ports:
-        - "9001:9000"
-      volumes:
-        - server-bin:/app
-        - ../tests/testdata/node1:/data
-        - ../tests/testdata/node1/config:/config
-      depends_on:
-        node1-init:
-          condition: service_completed_successfully
+    image: alpine:latest
+    user: "1000:1000"
+    command: /app/server --config=/config/cfg.json
+    ports:
+      - "9001:9000"
+    volumes:
+      - server-bin:/app
+      - ../tests/testdata/node1:/data
+      - ../tests/testdata/node1/config:/config
+    depends_on:
+      node1-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 9000 2>/dev/null"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
 
   node2:
     image: alpine:latest
@@ -72,6 +79,12 @@ services:
     depends_on:
       node2-init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 9000 2>/dev/null"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
 
   node3:
     image: alpine:latest
@@ -86,3 +99,32 @@ services:
     depends_on:
       node3-init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 9000 2>/dev/null"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+
+  test-runner:
+    image: golang:1.26.2-alpine
+    working_dir: /src
+    volumes:
+      - ../go.mod:/src/go.mod:ro
+      - ../go.sum:/src/go.sum:ro
+      - ../internal:/src/internal:ro
+      - ../tests/system:/src/tests/system:ro
+      - go-module-cache:/go/pkg/mod
+    environment:
+      - NODE1_ADDR=node1:9000
+      - NODE2_ADDR=node2:9000
+      - NODE3_ADDR=node3:9000
+      - GOFLAGS=-mod=mod
+    command: go test ./tests/system/... -v -count=1 -timeout 120s
+    depends_on:
+      node1:
+        condition: service_healthy
+      node2:
+        condition: service_healthy
+      node3:
+        condition: service_healthy

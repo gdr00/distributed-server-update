@@ -33,13 +33,18 @@ func New(cfg Config) (*Controller, error) {
 		return nil, fmt.Errorf("failed to create peer clients: %w", err)
 	}
 
+	antiEntropy := 60 * time.Second
+	if cfg.AntiEntropySeconds > 0 {
+		antiEntropy = time.Duration(cfg.AntiEntropySeconds) * time.Second
+	}
+
 	ctrl := &Controller{
 		cfg:                 cfg,
 		crdt:                crdt.New(cfg.CRDTWorkdir),
 		clients:             clients,
 		logic:               logic.New(cfg.SettingsPath),
 		tombstoneTTL:        int64(2 * 7 * 24 * time.Hour),
-		antiEntropyInterval: 60 * time.Second,
+		antiEntropyInterval: antiEntropy,
 		gcInterval:          24 * time.Hour,
 	}
 
