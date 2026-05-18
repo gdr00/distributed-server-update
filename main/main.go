@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"syscall"
 
 	"github.com/gdr00/distributed-server-update/internal/controller"
 )
@@ -54,7 +55,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	if err := ctrl.Run(ctx); err != nil {

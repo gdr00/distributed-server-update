@@ -8,7 +8,8 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     volumes:
-      - server-bin:/app
+      - server-bin:/output
+    command: cp /app/server /output/server
 
   node1-init:
     image: alpine:latest
