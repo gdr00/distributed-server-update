@@ -105,7 +105,7 @@ func (h *HLC) advanceLogical(base uint32) {
 //
 // If NTP steps sys clock backward might overflow Logical (maxUint32 events in the same instant), unlikely
 func (h *HLC) Tick() {
-	now := time.Now().UnixNano()
+	now := h.clock.Now()
 	if now > h.WallTime {
 		h.WallTime = now
 		h.Logical = 0

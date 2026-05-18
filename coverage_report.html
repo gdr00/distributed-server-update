@@ -55,7 +55,7 @@
 			<div id="nav">
 				<select id="files">
 				
-				<option value="file0">github.com/gdr00/distributed-server-update/internal/controller/controller.go (91.8%)</option>
+				<option value="file0">github.com/gdr00/distributed-server-update/internal/controller/controller.go (90.6%)</option>
 				
 				<option value="file1">github.com/gdr00/distributed-server-update/internal/controller/types.go (100.0%)</option>
 				
@@ -276,7 +276,7 @@ func (ctrl *Controller) runTombstoneGC(ctx context.Context) <span class="cov8" t
 func (ctrl *Controller) saveShutdownTime() <span class="cov8" title="1">{
         path := filepath.Join(ctrl.cfg.CRDTWorkdir, "last_shutdown")
         data := strconv.FormatInt(time.Now().UnixNano(), 10)
-        if err := os.WriteFile(path, []byte(data), 0600); err != nil </span><span class="cov8" title="1">{
+        if err := os.WriteFile(path, []byte(data), 0600); err != nil </span><span class="cov0" title="0">{
                 log.Printf("failed to save shutdown time: %v", err)
         }</span>
 }
@@ -445,7 +445,7 @@ func (c *CRDT) InitNew(entries types.Settings) error <span class="cov8" title="1
         // init newNode state
         if len(entries) != 0 </span><span class="cov8" title="1">{
                 // stamp all entries with new clock
-                clock := types.HLC{NodeID: nodeID}
+                clock := *types.NewHLC(nodeID)
                 for key, value := range entries </span><span class="cov8" title="1">{
                         clock.Tick()
                         c.state[key] = types.SettingEntry{
@@ -1762,7 +1762,7 @@ func (h *HLC) advanceLogical(base uint32) <span class="cov8" title="1">{
 //
 // If NTP steps sys clock backward might overflow Logical (maxUint32 events in the same instant), unlikely
 func (h *HLC) Tick() <span class="cov8" title="1">{
-        now := time.Now().UnixNano()
+        now := h.clock.Now()
         if now &gt; h.WallTime </span><span class="cov8" title="1">{
                 h.WallTime = now
                 h.Logical = 0

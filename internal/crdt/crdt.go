@@ -104,7 +104,7 @@ func (c *CRDT) InitNew(entries types.Settings) error {
 	// init newNode state
 	if len(entries) != 0 {
 		// stamp all entries with new clock
-		clock := types.HLC{NodeID: nodeID}
+		clock := *types.NewHLC(nodeID)
 		for key, value := range entries {
 			clock.Tick()
 			c.state[key] = types.SettingEntry{

@@ -386,7 +386,7 @@ func TestSystemClock_Now(t *testing.T) {
 // HLC Tick boundary
 
 func TestHLCTick_MultipleTicks(t *testing.T) {
-	h := HLC{WallTime: 0, Logical: 0, NodeID: "a"}
+	h := NewHLC("a")
 	for i := 0; i < 100; i++ {
 		h.Tick()
 	}
@@ -400,7 +400,11 @@ func TestHLCTick_MultipleTicks(t *testing.T) {
 
 func TestHLCTick_AdvancesLogicalWhenWallInFuture(t *testing.T) {
 	futureWall := time.Now().UnixNano() + int64(time.Hour)
-	h := HLC{WallTime: futureWall, Logical: 5, NodeID: "a"}
+	h := NewHLC("a", SetHLC(HLC{
+		clock:    &MockClock{Time: futureWall - 1},
+		WallTime: futureWall,
+		Logical:  5,
+	}))
 	h.Tick()
 	if h.WallTime != futureWall {
 		t.Error("WallTime should not change when it is already in the future")
