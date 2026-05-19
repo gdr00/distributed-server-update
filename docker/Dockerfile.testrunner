@@ -1,0 +1,2 @@
+FROM golang:1.26.2-alpine
+RUN apk add --no-cache docker-cli

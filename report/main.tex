@@ -304,28 +304,27 @@ The logical counter then captures concurrency at the chosen wall time
 \subsection{Clock Skew Handling}
 
 \begin{lstlisting}
-if received.WallTime - now > int64(10*time.Second) {
+if received.WallTime - now > int64(1*time.Second) {
     return fmt.Errorf("rejecting: clock too far in future")
 }
 \end{lstlisting}
 
 Rejection maps cleanly onto two failure cases.
 
-\paragraph{Sender clock too far ahead} (e.g.\ B at $+90s$, threshold
-$60s$): every correctly synchronised node rejects the entry.
+\paragraph{Sender clock too far ahead} (e.g.\ B at $+6s$, \textbf{threshold}
+$5s$, in our case $1s$): every correctly synchronised node rejects the entry.
 B's writes are dropped cluster-wide until its NTP is corrected. No divergence occurs
 
-\paragraph{Receiver clock too far behind} (e.g.\ A at $-30s$, B at
-$+50s$): from A's perspective the skew is $80s > 60s$, so A rejects,
-from a synchronised node C the skew is $50s < 60s$, so C accepts.
-A and C temporarily diverge. This divergence is \emph{A's fault}: a
-$30s$ NTP drift is an anomaly that requires intervention regardless
-of this system. Once A's clock is corrected, the next anti-entropy
-round delivers the missing entries and convergence is restored.
+\paragraph{Receiver clock too far behind} (e.g.\ A entrring with $-3s$, B entering with
+$+4s$): from A's perspective the skew is $7s > 5s$, so A rejects,
+from a synchronised node/cluster C the skew is $4s < 5s$, so C accepts and updates the clock to B wall skewing the whole cluster HLC to B's $+4s$ untill
+next NTP correction and cluster making up for those seconds.
+A and C temporarily diverge. Once A's clock is corrected, the next anti-entropy
+round syncs A to the node/cluster C + B.
 The divergence window is bounded by the NTP correction time, not permanent.
 
-The $5s$ threshold is a configurable operational boundary. Nodes
-whose NTP drift pass it, diverge until clock correction, this is
+The $1s$ threshold is an operational boundary that is within the 100ms NTP average skew.
+Nodes whose NTP drift pass it, diverge until clock correction, this is
 resolved at the infrastructure level (NTP monitoring,
 alerting) rather than silently accepting future-stamped entries that would risk
 clock poisoning across the cluster.

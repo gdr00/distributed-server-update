@@ -57,12 +57,12 @@ func (a HLC) Before(b HLC) bool {
 
 // Update local HLC with a recived HLC
 //
-// prevents partially bad actors/missconfigured nodes with sys clock in the future discarding updates with delta T > 1min
+// prevents misconfigured nodes with sys clock in the future from discarding updates; rejects delta T > 1s (NTP tolerance)
 func (h *HLC) Update(received HLC) error {
 
 	now := h.clock.Now()
 
-	if received.WallTime-now > int64(10*time.Second) {
+	if received.WallTime-now > int64(1*time.Second) {
 
 		return fmt.Errorf("rejecting clock too far in future: %v", received)
 	}

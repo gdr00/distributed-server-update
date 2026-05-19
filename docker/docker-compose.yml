@@ -51,6 +51,8 @@ services:
     image: alpine:latest
     user: "1000:1000"
     command: /app/server --config=/config/cfg.json
+    container_name: node1
+    restart: on-failure
     ports:
       - "9001:9000"
     volumes:
@@ -71,6 +73,8 @@ services:
     image: alpine:latest
     user: "1000:1000"
     command: /app/server --config=/config/cfg.json
+    container_name: node2
+    restart: on-failure
     ports:
       - "9002:9000"
     volumes:
@@ -91,6 +95,8 @@ services:
     image: alpine:latest
     user: "1000:1000"
     command: /app/server --config=/config/cfg.json
+    container_name: node3
+    restart: on-failure
     ports:
       - "9003:9000"
     volumes:
@@ -108,20 +114,36 @@ services:
       start_period: 3s
 
   test-runner:
-    image: golang:1.26.2-alpine
+    build:
+      context: .
+      dockerfile: Dockerfile.testrunner
+    user: "1000:1000"
+    group_add:
+      - "961"
     working_dir: /src
     volumes:
       - ../go.mod:/src/go.mod:ro
       - ../go.sum:/src/go.sum:ro
       - ../internal:/src/internal:ro
       - ../tests/system:/src/tests/system:ro
+      - ../tests/testdata/node1/crdt/:/data/node1_crdt:rw
+      - ../tests/testdata/node2/crdt/:/data/node2_crdt:rw
+      - ../tests/testdata/node3/crdt/:/data/node3_crdt:rw
+      - /var/run/docker.sock:/var/run/docker.sock
       - go-module-cache:/go/pkg/mod
     environment:
       - NODE1_ADDR=node1:9000
       - NODE2_ADDR=node2:9000
       - NODE3_ADDR=node3:9000
+      - NODE1_CONTAINER=node1
+      - NODE2_CONTAINER=node2
+      - NODE3_CONTAINER=node3
+      - NODE1_CRDT_DIR=/data/node1_crdt
+      - NODE2_CRDT_DIR=/data/node2_crdt
+      - NODE3_CRDT_DIR=/data/node3_crdt
       - GOFLAGS=-mod=mod
-    command: go test ./tests/system/... -v -count=1 -timeout 120s
+      - GOCACHE=/tmp/go-build
+    command: go test ./tests/system/... -v -count=1 -timeout 180s
     depends_on:
       node1:
         condition: service_healthy

@@ -3,5 +3,7 @@
   "settingsPath": "/data/settings.json",
   "crdtWorkdir": "/data/crdt",
   "grpcPort": 9000,
-  "antiEntropySeconds": 3
+  "antiEntropySeconds": 3,
+  "tombstoneTTLSeconds": 10,
+  "gcIntervalSeconds": 3
 }
