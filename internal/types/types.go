@@ -1,7 +1,6 @@
 package types
 
 import (
-	"fmt"
 	"time"
 )
 
@@ -55,17 +54,9 @@ func (a HLC) Before(b HLC) bool {
 	return a.NodeID < b.NodeID
 }
 
-// Update local HLC with a recived HLC
-//
-// prevents misconfigured nodes with sys clock in the future from discarding updates; rejects delta T > 1s (NTP tolerance)
-func (h *HLC) Update(received HLC) error {
-
+// Update local HLC with a received HLC.
+func (h *HLC) Update(received HLC) {
 	now := h.clock.Now()
-
-	if received.WallTime-now > int64(1*time.Second) {
-
-		return fmt.Errorf("rejecting clock too far in future: %v", received)
-	}
 
 	wall := max(h.WallTime, received.WallTime, now)
 
@@ -86,7 +77,6 @@ func (h *HLC) Update(received HLC) error {
 		h.WallTime = wall
 		h.Logical = 0
 	}
-	return nil
 }
 
 // Logical counter update

@@ -55,11 +55,11 @@
 			<div id="nav">
 				<select id="files">
 				
-				<option value="file0">github.com/gdr00/distributed-server-update/internal/controller/controller.go (90.6%)</option>
+				<option value="file0">github.com/gdr00/distributed-server-update/internal/controller/controller.go (90.4%)</option>
 				
 				<option value="file1">github.com/gdr00/distributed-server-update/internal/controller/types.go (100.0%)</option>
 				
-				<option value="file2">github.com/gdr00/distributed-server-update/internal/crdt/crdt.go (90.4%)</option>
+				<option value="file2">github.com/gdr00/distributed-server-update/internal/crdt/crdt.go (90.2%)</option>
 				
 				<option value="file3">github.com/gdr00/distributed-server-update/internal/logic/logic.go (89.9%)</option>
 				
@@ -127,24 +127,17 @@ func New(cfg Config) (*Controller, error) <span class="cov8" title="1">{
                 crdt:                crdt.New(cfg.CRDTWorkdir),
                 clients:             clients,
                 logic:               logic.New(cfg.SettingsPath),
-                tombstoneTTL:        int64(2 * 7 * 24 * time.Hour),
-                antiEntropyInterval: 60 * time.Second,
-                gcInterval:          24 * time.Hour,
+                tombstoneTTL:        resolveTombstoneTTL(cfg),
+                antiEntropyInterval: resolveAntiEntropy(cfg),
+                gcInterval:          resolveGCInterval(cfg),
         }
 
         if err := ctrl.fixNodeState(ctrl.checkLastShutdown()); err != nil </span><span class="cov8" title="1">{
                 return nil, fmt.Errorf("failed to initialize crdt: %w", err)
         }</span>
 
-        <span class="cov8" title="1">ctrl.network = network.NewUpdateServer(
-                func() types.Snapshot </span><span class="cov0" title="0">{
-                        return ctrl.crdt.Snapshot()
-                }</span>,
-                func(entry types.SettingEntry) <span class="cov0" title="0">{
-                        ctrl.crdt.NotifyRemote(entry)
-                }</span>,
-                ctrl.tombstoneTTL)
-        <span class="cov8" title="1">return ctrl, nil</span>
+        <span class="cov8" title="1">ctrl.network = network.NewUpdateServer(ctrl.crdt.Snapshot, ctrl.crdt.NotifyRemote, ctrl.tombstoneTTL)
+        return ctrl, nil</span>
 }
 
 // Init node with the "master" configuration when new system is initialized
@@ -184,7 +177,7 @@ func (ctrl *Controller) Run(ctx context.Context) error <span class="cov8" title=
 
         defer ctrl.saveShutdownTime()
 
-        // reconcile settings file with CRDT state — full replacement to drop stale entries
+        // reconcile settings file with CRDT state, full replacement to drop stale/non-initialized entries
         settings := make(types.Settings)
         ctrl.crdt.Reconcile(func(entry types.SettingEntry) </span><span class="cov8" title="1">{
                 if !entry.Deleted </span><span class="cov8" title="1">{
@@ -276,7 +269,7 @@ func (ctrl *Controller) runTombstoneGC(ctx context.Context) <span class="cov8" t
 func (ctrl *Controller) saveShutdownTime() <span class="cov8" title="1">{
         path := filepath.Join(ctrl.cfg.CRDTWorkdir, "last_shutdown")
         data := strconv.FormatInt(time.Now().UnixNano(), 10)
-        if err := os.WriteFile(path, []byte(data), 0600); err != nil </span><span class="cov0" title="0">{
+        if err := os.WriteFile(path, []byte(data), 0600); err != nil </span><span class="cov8" title="1">{
                 log.Printf("failed to save shutdown time: %v", err)
         }</span>
 }
@@ -306,6 +299,32 @@ func (ctrl *Controller) fixNodeState(lastShutdown int64) error <span class="cov8
         }</span>
         <span class="cov8" title="1">return ctrl.crdt.Init()</span>
 }
+
+func resolveGCInterval(cfg Config) time.Duration <span class="cov8" title="1">{
+        if cfg.GCIntervalSeconds &gt; cfg.TombstoneTTLSeconds </span><span class="cov0" title="0">{
+                log.Printf("warning: gcInterval (%ds) &gt; tombstoneTTL (%ds), tombstones will outlive TTL by up to one GC cycle",
+                        cfg.GCIntervalSeconds, cfg.TombstoneTTLSeconds)
+        }</span>
+
+        <span class="cov8" title="1">if cfg.GCIntervalSeconds &gt; 0 </span><span class="cov0" title="0">{
+                return time.Duration(cfg.GCIntervalSeconds) * time.Second
+        }</span>
+        <span class="cov8" title="1">return 24 * time.Hour</span>
+}
+
+func resolveAntiEntropy(cfg Config) time.Duration <span class="cov8" title="1">{
+        if cfg.AntiEntropySeconds &gt; 0 </span><span class="cov0" title="0">{
+                return time.Duration(cfg.AntiEntropySeconds) * time.Second
+        }</span>
+        <span class="cov8" title="1">return 60 * time.Second</span>
+}
+
+func resolveTombstoneTTL(cfg Config) int64 <span class="cov8" title="1">{
+        if cfg.TombstoneTTLSeconds &gt; 0 </span><span class="cov0" title="0">{
+                return int64(cfg.TombstoneTTLSeconds) * int64(time.Second)
+        }</span>
+        <span class="cov8" title="1">return int64(2 * 7 * 24 * time.Hour)</span>
+}
 </pre>
 		
 		<pre class="file" id="file1" style="display: none">package controller
@@ -317,10 +336,13 @@ import (
 )
 
 type Config struct {
-        PeerAddresses []string
-        SettingsPath  string
-        CRDTWorkdir   string
-        GRPCPort      uint16
+        PeerAddresses       []string
+        SettingsPath        string
+        CRDTWorkdir         string
+        GRPCPort            uint16
+        AntiEntropySeconds  int
+        TombstoneTTLSeconds int
+        GCIntervalSeconds   int
 }
 
 func LoadConfig(configPath string) (Config, error) <span class="cov8" title="1">{
@@ -539,11 +561,8 @@ func (c *CRDT) Run(ctx context.Context) <span class="cov8" title="1">{
                         }
                 // I have incoming changes from one of the peers I am subscribed to
                 case entry := &lt;-c.remoteCh:<span class="cov8" title="1">
-                        if err := c.clock.Update(entry.Clock); err != nil </span><span class="cov8" title="1">{
-                                log.Printf("remote clock anomaly, entry rejected: %v, %v", err, entry)
-                                continue</span>
-                        }
-                        <span class="cov8" title="1">if c.merge(entry) </span><span class="cov8" title="1">{
+                        c.clock.Update(entry.Clock)
+                        if c.merge(entry) </span><span class="cov8" title="1">{
                                 c.saveState()
                                 if c.OnFileSync != nil </span><span class="cov8" title="1">{
                                         c.OnFileSync(entry)
@@ -1658,7 +1677,6 @@ var UpdateService_ServiceDesc = grpc.ServiceDesc{
 		<pre class="file" id="file9" style="display: none">package types
 
 import (
-        "fmt"
         "time"
 )
 
@@ -1712,19 +1730,11 @@ func (a HLC) Before(b HLC) bool <span class="cov8" title="1">{
         <span class="cov8" title="1">return a.NodeID &lt; b.NodeID</span>
 }
 
-// Update local HLC with a recived HLC
-//
-// prevents partially bad actors/missconfigured nodes with sys clock in the future discarding updates with delta T &gt; 1min
-func (h *HLC) Update(received HLC) error <span class="cov8" title="1">{
-
+// Update local HLC with a received HLC.
+func (h *HLC) Update(received HLC) <span class="cov8" title="1">{
         now := h.clock.Now()
 
-        if received.WallTime-now &gt; int64(10*time.Second) </span><span class="cov8" title="1">{
-
-                return fmt.Errorf("rejecting clock too far in future: %v", received)
-        }</span>
-
-        <span class="cov8" title="1">wall := max(h.WallTime, received.WallTime, now)
+        wall := max(h.WallTime, received.WallTime, now)
 
         oldWall := h.WallTime
         h.WallTime = wall
@@ -1743,7 +1753,6 @@ func (h *HLC) Update(received HLC) error <span class="cov8" title="1">{
                 h.WallTime = wall
                 h.Logical = 0
         }</span>
-        <span class="cov8" title="1">return nil</span>
 }
 
 // Logical counter update

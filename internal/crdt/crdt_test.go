@@ -330,29 +330,6 @@ func TestInit_CreatesNestedDir(t *testing.T) {
 	}
 }
 
-func TestRun_RemoteFutureClockRejected(t *testing.T) {
-	c, _ := setupCRDT(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	fileSync := make(chan types.SettingEntry, 1)
-	c.OnFileSync = func(e types.SettingEntry) { fileSync <- e }
-	go c.Run(ctx)
-
-	futureWall := time.Now().UnixNano() + int64(2*time.Minute)
-	c.NotifyRemote(types.SettingEntry{
-		Key:   "theme",
-		Value: "dark",
-		Clock: types.HLC{WallTime: futureWall, NodeID: "remote"},
-	})
-
-	select {
-	case e := <-fileSync:
-		t.Fatalf("skewed entry should have been dropped, got: %+v", e)
-	case <-time.After(500 * time.Millisecond):
-		// expected: skewed remote entry rejected
-	}
-}
 
 func TestRun_SaveStateWriteFailureIsNonFatal(t *testing.T) {
 	c, dir := setupCRDT(t)

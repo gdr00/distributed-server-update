@@ -346,27 +346,6 @@ func TestOlderWriteDoesNotOverwrite(t *testing.T) {
 	waitKeyValue(t, key, "current", 5*time.Second)
 }
 
-// TestSkewedClockRejected sends an entry with a clock 2 s in the future (beyond
-// the 1 s skew limit) and verifies it is rejected and never appears on any node.
-func TestSkewedClockRejected(t *testing.T) {
-	key := "skewed_clock_key"
-
-	// wallOffset = +2s exceeds the 1s skew limit; applyRemote calls clock.Update
-	// which returns an error — entry is dropped, merge never fires, nothing persisted.
-	if err := writeToNode(context.Background(), nodes[0], key, "skewed", "test-skew", int64(2*time.Second)); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	// Wait two anti-entropy cycles (3s each) — if accepted it would propagate by now.
-	time.Sleep(8 * time.Second)
-
-	ctx := context.Background()
-	for i, c := range nodes {
-		if keyPresentOnNode(ctx, c, key) {
-			t.Errorf("node%d: skewed-clock entry was accepted, want rejected", i+1)
-		}
-	}
-}
 
 // crdt state helpers
 

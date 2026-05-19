@@ -24,25 +24,9 @@ func TestHLC_Update(t *testing.T) {
 		local       HLC
 		received    HLC
 		now         int64
-		wantErr     bool
 		wantWall    int64
 		wantLogical uint32
 	}{
-		{
-			name: "Error: Clock too far in future",
-			local: *NewHLC("1", SetHLC(HLC{
-				clock:    &MockClock{Time: timeNow},
-				WallTime: timeNow,
-				Logical:  0,
-			})),
-			received: *NewHLC("2", SetHLC(HLC{
-				clock:    &MockClock{Time: 0},
-				WallTime: timeNow + int64(2*time.Minute),
-				Logical:  0,
-			})),
-			now:     timeNow,
-			wantErr: true,
-		},
 		{
 			name: "Branches: All Equal",
 			local: *NewHLC("1", SetHLC(HLC{
@@ -129,19 +113,13 @@ func TestHLC_Update(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			h := tt.local
 
-			err := h.Update(tt.received)
+			h.Update(tt.received)
 
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("Update() error = %v, wantErr %v", err, tt.wantErr)
+			if h.WallTime != tt.wantWall {
+				t.Errorf("WallTime = %v, want %v", h.WallTime, tt.wantWall)
 			}
-
-			if !tt.wantErr {
-				if h.WallTime != tt.wantWall {
-					t.Errorf("WallTime = %v, want %v", h.WallTime, tt.wantWall)
-				}
-				if h.Logical != tt.wantLogical {
-					t.Errorf("Logical = %v, want %v", h.Logical, tt.wantLogical)
-				}
+			if h.Logical != tt.wantLogical {
+				t.Errorf("Logical = %v, want %v", h.Logical, tt.wantLogical)
 			}
 		})
 	}
