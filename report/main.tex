@@ -656,6 +656,10 @@ at approximately 90\%, \texttt{network} at approximately 91\%, and
 untestable without process-level mocking, \texttt{json.Marshal} on \texttt{map[string]string} (the error path never
 fires in the Go standard library), and the \texttt{fsnotify} closed-channel
 path (fires only after the watcher goroutine has already exited).
+Unit tests \texttt{TestMerge\_SameWallTimeTiebreakByLogical} and
+\texttt{TestMerge\_SameWallAndLogicalTiebreakByNodeID} verify the
+logical-then-nodeID tiebreak defined in Section~\ref{sec:crdt}, covering
+the concurrent-write scenario that system-level tests cannot exercise.
 
 \subsection{System Tests}
 
