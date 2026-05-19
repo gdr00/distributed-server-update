@@ -88,7 +88,7 @@ func (ctrl *Controller) Run(ctx context.Context) error {
 
 	defer ctrl.saveShutdownTime()
 
-	// reconcile settings file with CRDT state — full replacement to drop stale entries
+	// reconcile settings file with CRDT state, full replacement to drop stale/non-initialized entries
 	settings := make(types.Settings)
 	ctrl.crdt.Reconcile(func(entry types.SettingEntry) {
 		if !entry.Deleted {
