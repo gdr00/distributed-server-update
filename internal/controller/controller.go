@@ -33,18 +33,13 @@ func New(cfg Config) (*Controller, error) {
 		return nil, fmt.Errorf("failed to create peer clients: %w", err)
 	}
 
-	antiEntropy := 60 * time.Second
-	if cfg.AntiEntropySeconds > 0 {
-		antiEntropy = time.Duration(cfg.AntiEntropySeconds) * time.Second
-	}
-
 	ctrl := &Controller{
 		cfg:                 cfg,
 		crdt:                crdt.New(cfg.CRDTWorkdir),
 		clients:             clients,
 		logic:               logic.New(cfg.SettingsPath),
-		tombstoneTTL:        int64(2 * 7 * 24 * time.Hour),
-		antiEntropyInterval: antiEntropy,
+		tombstoneTTL:        resolveTombstoneTTL(cfg),
+		antiEntropyInterval: resolveAntiEntropy(cfg),
 		gcInterval:          24 * time.Hour,
 	}
 
@@ -52,14 +47,7 @@ func New(cfg Config) (*Controller, error) {
 		return nil, fmt.Errorf("failed to initialize crdt: %w", err)
 	}
 
-	ctrl.network = network.NewUpdateServer(
-		func() types.Snapshot {
-			return ctrl.crdt.Snapshot()
-		},
-		func(entry types.SettingEntry) {
-			ctrl.crdt.NotifyRemote(entry)
-		},
-		ctrl.tombstoneTTL)
+	ctrl.network = network.NewUpdateServer(ctrl.crdt.Snapshot, ctrl.crdt.NotifyRemote, ctrl.tombstoneTTL)
 	return ctrl, nil
 }
 
@@ -221,4 +209,18 @@ func (ctrl *Controller) fixNodeState(lastShutdown int64) error {
 		return ctrl.crdt.InitNew(types.Settings{})
 	}
 	return ctrl.crdt.Init()
+}
+
+func resolveAntiEntropy(cfg Config) time.Duration {
+	if cfg.AntiEntropySeconds > 0 {
+		return time.Duration(cfg.AntiEntropySeconds) * time.Second
+	}
+	return 60 * time.Second
+}
+
+func resolveTombstoneTTL(cfg Config) int64 {
+	if cfg.TombstoneTTLSeconds > 0 {
+		return int64(cfg.TombstoneTTLSeconds) * int64(time.Second)
+	}
+	return int64(2 * 7 * 24 * time.Hour)
 }
