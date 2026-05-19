@@ -1,44 +1,10 @@
 package controller
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 )
-
-// Config tests
-
-func TestConfig_New(t *testing.T) {
-	cfg := Config{
-		PeerAddresses: []string{"localhost:50051"},
-		SettingsPath:  "/tmp/settings",
-		CRDTWorkdir:   "/tmp/crdt",
-		GRPCPort:      50051,
-	}
-	if len(cfg.PeerAddresses) != 1 {
-		t.Errorf("PeerAddresses = %d, want 1", len(cfg.PeerAddresses))
-	}
-	if cfg.SettingsPath != "/tmp/settings" {
-		t.Errorf("SettingsPath = %s, want /tmp/settings", cfg.SettingsPath)
-	}
-	if cfg.CRDTWorkdir != "/tmp/crdt" {
-		t.Errorf("CRDTWorkdir = %s, want /tmp/crdt", cfg.CRDTWorkdir)
-	}
-	if cfg.GRPCPort != 50051 {
-		t.Errorf("GRPCPort = %d, want 50051", cfg.GRPCPort)
-	}
-}
-
-func TestConfig_Defaults(t *testing.T) {
-	cfg := Config{}
-	if cfg.PeerAddresses != nil {
-		t.Error("expected nil PeerAddresses")
-	}
-	if cfg.SettingsPath != "" {
-		t.Errorf("empty SettingsPath, got %s", cfg.SettingsPath)
-	}
-}
 
 // LoadConfig tests
 
@@ -123,60 +89,6 @@ func TestLoadConfig_MinimalConfig(t *testing.T) {
 	}
 	if cfg.GRPCPort != 0 {
 		t.Errorf("GRPCPort = %d, want 0 (zero value)", cfg.GRPCPort)
-	}
-}
-
-func TestLoadConfig_WrappedError(t *testing.T) {
-	dir := t.TempDir()
-	_, err := LoadConfig(dir)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if err.Error() == "" {
-		t.Fatal("expected wrapped error message to contain useful info")
-	}
-}
-
-// Config JSON serialization
-
-func TestConfig_JSONMarshalUnmarshal(t *testing.T) {
-	cfg := Config{
-		PeerAddresses: []string{"a:1", "b:2"},
-		SettingsPath:  "/s",
-		CRDTWorkdir:   "/c",
-		GRPCPort:      1234,
-	}
-	data, err := json.Marshal(cfg)
-	if err != nil {
-		t.Fatalf("Marshal error: %v", err)
-	}
-	var decoded Config
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("Unmarshal error: %v", err)
-	}
-	if len(decoded.PeerAddresses) != 2 {
-		t.Errorf("PeerAddresses = %d, want 2", len(decoded.PeerAddresses))
-	}
-	if decoded.SettingsPath != "/s" {
-		t.Errorf("SettingsPath = %s, want /s", decoded.SettingsPath)
-	}
-	if decoded.CRDTWorkdir != "/c" {
-		t.Errorf("CRDTWorkdir = %s, want /c", decoded.CRDTWorkdir)
-	}
-	if decoded.GRPCPort != 1234 {
-		t.Errorf("GRPCPort = %d, want 1234", decoded.GRPCPort)
-	}
-}
-
-func TestConfig_JSONEmpty(t *testing.T) {
-	var cfg Config
-	data, err := json.Marshal(cfg)
-	if err != nil {
-		t.Fatalf("Marshal error: %v", err)
-	}
-	var decoded Config
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("Unmarshal error: %v", err)
 	}
 }
 

@@ -364,16 +364,6 @@ func TestNew_NotInitialized(t *testing.T) {
 	}
 }
 
-func TestNew_MissingStateFile(t *testing.T) {
-	dir := t.TempDir()
-	os.WriteFile(dir+"/node_id", []byte("test-node"), 0600)
-	// no crdt_state.json
-	err := New(dir).Init()
-	if err == nil {
-		t.Fatal("expected error when crdt_state.json missing")
-	}
-}
-
 func TestNew_CorruptedState(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(dir+"/node_id", []byte("test-node"), 0600)

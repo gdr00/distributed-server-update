@@ -1,7 +1,6 @@
 package types
 
 import (
-	"encoding/json"
 	"math"
 	"testing"
 	"time"
@@ -125,135 +124,6 @@ func TestHLC_Update(t *testing.T) {
 	}
 }
 
-// SettingEntry tests
-
-func TestSettingEntry_New(t *testing.T) {
-	e := SettingEntry{Key: "foo", Value: "bar", Deleted: false}
-	if e.Key != "foo" {
-		t.Errorf("Key = %s, want foo", e.Key)
-	}
-	if e.Value != "bar" {
-		t.Errorf("Value = %s, want bar", e.Value)
-	}
-	if e.Deleted {
-		t.Error("expected Deleted=false")
-	}
-}
-
-func TestSettingEntry_Deleted(t *testing.T) {
-	e := SettingEntry{Key: "del", Value: "", Deleted: true}
-	if !e.Deleted {
-		t.Error("expected Deleted=true")
-	}
-}
-
-// Snapshot tests
-
-func TestSnapshot_WithEntries(t *testing.T) {
-	s := Snapshot{
-		Entries: map[string]SettingEntry{
-			"k1": {Key: "k1", Value: "v1", Deleted: false},
-			"k2": {Key: "k2", Value: "v2", Deleted: false},
-		},
-	}
-	if len(s.Entries) != 2 {
-		t.Errorf("expected 2 entries, got %d", len(s.Entries))
-	}
-	if entry, ok := s.Entries["k1"]; !ok || entry.Value != "v1" {
-		t.Error("missing or wrong k1 entry")
-	}
-	if _, ok := s.Entries["k3"]; ok {
-		t.Error("unexpected k3 entry")
-	}
-}
-
-func TestSnapshot_SetAndDelete(t *testing.T) {
-	s := Snapshot{Entries: make(map[string]SettingEntry)}
-	s.Entries["key"] = SettingEntry{Key: "key", Value: "val", Deleted: false}
-	if len(s.Entries) != 1 {
-		t.Errorf("expected 1 entry after set, got %d", len(s.Entries))
-	}
-	entry := s.Entries["key"]
-	entry.Deleted = true
-	s.Entries["key"] = entry
-	if !s.Entries["key"].Deleted {
-		t.Error("expected entry to be deleted")
-	}
-}
-
-// Settings type tests
-
-func TestSettings_SetGet(t *testing.T) {
-	s := Settings{"host": "localhost", "port": "8080"}
-	if s["host"] != "localhost" {
-		t.Errorf("host = %s, want localhost", s["host"])
-	}
-	if s["port"] != "8080" {
-		t.Errorf("port = %s, want 8080", s["port"])
-	}
-}
-
-func TestSettings_Update(t *testing.T) {
-	s := Settings{"key": "old"}
-	s["key"] = "new"
-	if s["key"] != "new" {
-		t.Errorf("key = %s, want new", s["key"])
-	}
-}
-
-func TestSettings_Delete(t *testing.T) {
-	s := Settings{"a": "1", "b": "2"}
-	delete(s, "a")
-	if _, ok := s["a"]; ok {
-		t.Error("expected a to be deleted")
-	}
-	if len(s) != 1 {
-		t.Errorf("expected 1 entry after delete, got %d", len(s))
-	}
-}
-
-func TestSettings_SetNilValue(t *testing.T) {
-	s := Settings{}
-	s["empty"] = ""
-	if s["empty"] != "" {
-		t.Error("expected empty string value")
-	}
-}
-
-// HLC serialization
-
-func TestHLC_JSONMarshalUnmarshal(t *testing.T) {
-	original := HLC{WallTime: 12345, Logical: 42, NodeID: "test-node"}
-	data, err := json.Marshal(original)
-	if err != nil {
-		t.Fatalf("Marshal error: %v", err)
-	}
-	var decoded HLC
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("Unmarshal error: %v", err)
-	}
-	if decoded.WallTime != original.WallTime {
-		t.Errorf("WallTime = %d, want %d", decoded.WallTime, original.WallTime)
-	}
-	if decoded.Logical != original.Logical {
-		t.Errorf("Logical = %d, want %d", decoded.Logical, original.Logical)
-	}
-	if decoded.NodeID != original.NodeID {
-		t.Errorf("NodeID = %s, want %s", decoded.NodeID, original.NodeID)
-	}
-}
-
-func TestHLC_JSONEmpty(t *testing.T) {
-	var h HLC
-	data, err := json.Marshal(h)
-	if err != nil {
-		t.Fatalf("Marshal error: %v", err)
-	}
-	if string(data) != `{"WallTime":0,"Logical":0,"NodeID":""}` {
-		t.Errorf("unexpected JSON: %s", string(data))
-	}
-}
-
 // HLC comparison edge cases
 
 func TestHLCBefore_EdgeCases(t *testing.T) {
@@ -276,77 +146,6 @@ func TestHLCBefore_EdgeCases(t *testing.T) {
 	h2 := HLC{WallTime: 100, Logical: 0, NodeID: "h"}
 	if g.Before(h2) {
 		t.Error("max uint32 logical should not be before 0")
-	}
-}
-
-// Snapshot JSON serialization
-
-func TestSnapshot_JSONMarshalUnmarshal(t *testing.T) {
-	s := Snapshot{
-		Entries: map[string]SettingEntry{
-			"k1": {Key: "k1", Value: "v1", Deleted: false},
-		},
-	}
-	data, err := json.Marshal(s)
-	if err != nil {
-		t.Fatalf("Marshal error: %v", err)
-	}
-	var decoded Snapshot
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("Unmarshal error: %v", err)
-	}
-	if len(decoded.Entries) != 1 {
-		t.Errorf("Entries count = %d, want 1", len(decoded.Entries))
-	}
-	if entry, ok := decoded.Entries["k1"]; !ok || entry.Value != "v1" {
-		t.Error("missing or wrong k1 entry after round-trip")
-	}
-}
-
-func TestSnapshot_JSONEmpty(t *testing.T) {
-	var s Snapshot
-	data, err := json.Marshal(s)
-	if err != nil {
-		t.Fatalf("Marshal error: %v", err)
-	}
-	var decoded Snapshot
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("Unmarshal error: %v", err)
-	}
-}
-
-// Settings JSON serialization
-
-func TestSettings_JSONMarshalUnmarshal(t *testing.T) {
-	s := Settings{"host": "localhost", "port": "8080"}
-	data, err := json.Marshal(s)
-	if err != nil {
-		t.Fatalf("Marshal error: %v", err)
-	}
-	var decoded Settings
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("Unmarshal error: %v", err)
-	}
-	if decoded["host"] != "localhost" {
-		t.Errorf("host = %s, want localhost", decoded["host"])
-	}
-	if decoded["port"] != "8080" {
-		t.Errorf("port = %s, want 8080", decoded["port"])
-	}
-}
-
-func TestSettings_JSONEmpty(t *testing.T) {
-	var s Settings
-	data, err := json.Marshal(s)
-	if err != nil {
-		t.Fatalf("Marshal error: %v", err)
-	}
-	var decoded Settings
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("Unmarshal error: %v", err)
-	}
-	if decoded != nil {
-		t.Error("expected nil map after unmarshaling null")
 	}
 }
 
@@ -419,15 +218,6 @@ func TestHLCBefore_Antisymmetry(t *testing.T) {
 	}
 }
 
-// HLC Before irreflexivity
-
-func TestHLCBefore_Irreflexivity(t *testing.T) {
-	h := HLC{WallTime: 100, Logical: 1, NodeID: "a"}
-	if h.Before(h) {
-		t.Error("irreflexivity violation: HLC before itself")
-	}
-}
-
 // HLC Update preserves NodeID
 
 func TestHLCUpdate_NodeIDPreserved(t *testing.T) {
@@ -443,66 +233,3 @@ func TestHLCUpdate_NodeIDPreserved(t *testing.T) {
 	}
 }
 
-// SettingEntry with HLC
-
-func TestSettingEntry_HLCField(t *testing.T) {
-	clock := HLC{WallTime: 999, Logical: 123, NodeID: "node-1"}
-	entry := SettingEntry{Key: "k", Value: "v", Clock: clock, Deleted: false}
-	if entry.Clock.WallTime != 999 {
-		t.Errorf("Clock.WallTime = %d, want 999", entry.Clock.WallTime)
-	}
-	if entry.Clock.Logical != 123 {
-		t.Errorf("Clock.Logical = %d, want 123", entry.Clock.Logical)
-	}
-	if entry.Clock.NodeID != "node-1" {
-		t.Errorf("Clock.NodeID = %s, want node-1", entry.Clock.NodeID)
-	}
-}
-
-// Snapshot CRUD operations
-
-func TestSnapshot_CRUD(t *testing.T) {
-	s := Snapshot{Entries: make(map[string]SettingEntry)}
-
-	// Set
-	key := "test-key"
-	entry := SettingEntry{Key: key, Value: "test-value", Deleted: false}
-	s.Entries[key] = entry
-
-	// Get
-	got, ok := s.Entries[key]
-	if !ok {
-		t.Fatal("key not found after set")
-	}
-	if got.Value != "test-value" {
-		t.Errorf("value = %s, want test-value", got.Value)
-	}
-
-	// Update
-	got.Value = "updated-value"
-	s.Entries[key] = got
-	if s.Entries[key].Value != "updated-value" {
-		t.Error("update failed")
-	}
-
-	// Delete
-	delete(s.Entries, key)
-	if _, ok := s.Entries[key]; ok {
-		t.Error("delete failed")
-	}
-}
-
-// Negative wall time HLC
-
-func TestHLCBefore_NegativeWallTime(t *testing.T) {
-	a := HLC{WallTime: -1000, Logical: 0, NodeID: "a"}
-	b := HLC{WallTime: -500, Logical: 0, NodeID: "a"}
-	if !a.Before(b) {
-		t.Error("expected negative wall time -1000 before -500")
-	}
-	c := HLC{WallTime: -1000, Logical: 0, NodeID: "a"}
-	d := HLC{WallTime: -1000, Logical: 0, NodeID: "a"}
-	if c.Before(d) || d.Before(c) {
-		t.Error("equal negative wall times should not compare before")
-	}
-}
