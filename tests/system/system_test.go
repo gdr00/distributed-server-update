@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -270,22 +271,32 @@ func TestHLCConflictResolution(t *testing.T) {
 	waitKeyValue(t, key, "winner", 30*time.Second)
 }
 
-// TestBidirectionalSync writes a distinct key to node1 and another to node2,
-// then verifies all nodes end up with both keys.
+// TestBidirectionalSync writes a distinct key to node1 and another to node2
+// concurrently, then verifies all nodes end up with both keys.
 func TestBidirectionalSync(t *testing.T) {
-	if err := writeToNode(context.Background(), nodes[0], "bidir_a", "val_a", "node1", 0); err != nil {
-		t.Fatalf("write bidir_a: %v", err)
+	type result struct {
+		key string
+		err error
 	}
-	if err := writeToNode(context.Background(), nodes[1], "bidir_b", "val_b", "node2", 0); err != nil {
-		t.Fatalf("write bidir_b: %v", err)
+	ch := make(chan result, 2)
+	go func() {
+		ch <- result{"bidir_a", writeToNode(context.Background(), nodes[0], "bidir_a", "val_a", "node1", 0)}
+	}()
+	go func() {
+		ch <- result{"bidir_b", writeToNode(context.Background(), nodes[1], "bidir_b", "val_b", "node2", 0)}
+	}()
+	for range 2 {
+		if r := <-ch; r.err != nil {
+			t.Fatalf("write %s: %v", r.key, r.err)
+		}
 	}
 
 	waitKeyValue(t, "bidir_a", "val_a", 30*time.Second)
 	waitKeyValue(t, "bidir_b", "val_b", 30*time.Second)
 }
 
-// TestMultipleKeysConverge fans writes across all three nodes and asserts every
-// node ends up with every key.
+// TestMultipleKeysConverge fans writes across all three nodes concurrently and
+// asserts every node ends up with every key.
 func TestMultipleKeysConverge(t *testing.T) {
 	writes := []struct {
 		client userpb.UpdateServiceClient
@@ -300,11 +311,28 @@ func TestMultipleKeysConverge(t *testing.T) {
 		{nodes[1], "multi_5", "v5", "node2"},
 	}
 
+	var wg sync.WaitGroup
+	errs := make(chan error, len(writes))
 	for _, w := range writes {
-		if err := writeToNode(context.Background(), w.client, w.key, w.value, w.nodeID, 0); err != nil {
-			t.Fatalf("write %s: %v", w.key, err)
-		}
+		wg.Add(1)
+		go func(w struct {
+			client userpb.UpdateServiceClient
+			key    string
+			value  string
+			nodeID string
+		}) {
+			defer wg.Done()
+			if err := writeToNode(context.Background(), w.client, w.key, w.value, w.nodeID, 0); err != nil {
+				errs <- fmt.Errorf("write %s: %w", w.key, err)
+			}
+		}(w)
 	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+
 	for _, w := range writes {
 		waitKeyValue(t, w.key, w.value, 30*time.Second)
 	}
@@ -345,7 +373,6 @@ func TestOlderWriteDoesNotOverwrite(t *testing.T) {
 	time.Sleep(8 * time.Second)
 	waitKeyValue(t, key, "current", 5*time.Second)
 }
-
 
 // crdt state helpers
 
