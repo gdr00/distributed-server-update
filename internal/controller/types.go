@@ -7,12 +7,13 @@ import (
 )
 
 type Config struct {
-	PeerAddresses        []string
-	SettingsPath         string
-	CRDTWorkdir          string
-	GRPCPort             uint16
-	AntiEntropySeconds   int
-	TombstoneTTLSeconds  int
+	PeerAddresses       []string
+	SettingsPath        string
+	CRDTWorkdir         string
+	GRPCPort            uint16
+	AntiEntropySeconds  int
+	TombstoneTTLSeconds int
+	GCIntervalSeconds   int
 }
 
 func LoadConfig(configPath string) (Config, error) {

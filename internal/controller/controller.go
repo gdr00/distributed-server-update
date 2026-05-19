@@ -40,7 +40,7 @@ func New(cfg Config) (*Controller, error) {
 		logic:               logic.New(cfg.SettingsPath),
 		tombstoneTTL:        resolveTombstoneTTL(cfg),
 		antiEntropyInterval: resolveAntiEntropy(cfg),
-		gcInterval:          24 * time.Hour,
+		gcInterval:          resolveGCInterval(cfg),
 	}
 
 	if err := ctrl.fixNodeState(ctrl.checkLastShutdown()); err != nil {
@@ -209,6 +209,18 @@ func (ctrl *Controller) fixNodeState(lastShutdown int64) error {
 		return ctrl.crdt.InitNew(types.Settings{})
 	}
 	return ctrl.crdt.Init()
+}
+
+func resolveGCInterval(cfg Config) time.Duration {
+	if cfg.GCIntervalSeconds > cfg.TombstoneTTLSeconds {
+		log.Printf("warning: gcInterval (%ds) > tombstoneTTL (%ds), tombstones will outlive TTL by up to one GC cycle",
+			cfg.GCIntervalSeconds, cfg.TombstoneTTLSeconds)
+	}
+
+	if cfg.GCIntervalSeconds > 0 {
+		return time.Duration(cfg.GCIntervalSeconds) * time.Second
+	}
+	return 24 * time.Hour
 }
 
 func resolveAntiEntropy(cfg Config) time.Duration {
