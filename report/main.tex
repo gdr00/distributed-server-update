@@ -303,31 +303,52 @@ The logical counter then captures concurrency at the chosen wall time
 
 \subsection{Clock Skew Handling}
 
-\begin{lstlisting}
-if received.WallTime - now > int64(1*time.Second) {
-    return fmt.Errorf("rejecting: clock too far in future")
-}
-\end{lstlisting}
+The system assumes NTP-disciplined clocks with bounded skew ($\lesssim$10ms on
+  LAN, $\lesssim$100ms on WAN. CockroachDB's empirically chosen tolerance is
+500ms \cite{cockroachdb2023}). Under this assumption HLC self-corrects: when a
+node physical clock falls behind the cluster wall time, the logical counter
+increments, preserving causality without advancing the wall.
 
-Rejection maps cleanly onto two failure cases.
+An initial design rejected incoming entries whose \texttt{WallTime} exceeded the
+receiver's physical clock by more than a fixed threshold $T$:
 
-\paragraph{Sender clock too far ahead} (e.g.\ B at $+6s$, \textbf{threshold}
-$5s$, in our case $1s$): every correctly synchronised node rejects the entry.
-B's writes are dropped cluster-wide until its NTP is corrected. No divergence occurs
+\begin{equation}
+  \textit{received.WallTime} - \textit{now} > T \implies \text{reject}
+\end{equation}
 
-\paragraph{Receiver clock too far behind} (e.g.\ A entrring with $-3s$, B entering with
-$+4s$): from A's perspective the skew is $7s > 5s$, so A rejects,
-from a synchronised node/cluster C the skew is $4s < 5s$, so C accepts and updates the clock to B wall skewing the whole cluster HLC to B's $+4s$ untill
-next NTP correction and cluster making up for those seconds.
-A and C temporarily diverge. Once A's clock is corrected, the next anti-entropy
-round syncs A to the node/cluster C + B.
-The divergence window is bounded by the NTP correction time, not permanent.
+This check merges the HLC wall with the sender's physical clock.
+Consider a cluster at physical time $0$, a fast
+node $B$ at $+0.9s$, and a slow node $A$ at $-0.9s$
+(so $|t_A - t_B| = 1.8s> T$):
 
-The $1s$ threshold is an operational boundary that is within the 100ms NTP average skew.
-Nodes whose NTP drift pass it, diverge until clock correction, this is
-resolved at the infrastructure level (NTP monitoring,
-alerting) rather than silently accepting future-stamped entries that would risk
-clock poisoning across the cluster.
+\begin{enumerate}
+  \item Cluster accepts $B$: $\delta = 0.9s < T$.  HLC wall bumped to $+0.9s$.
+  \item Cluster sends its own entries to $A$.  Those entries carry
+    $\texttt{WallTime} = +0.9s$.
+  \item $A$ computes $0.9 - (-0.9) = 1.8s > T$ and rejects,
+    despite $A$ and the cluster being only $0.9s$ apart physically.
+\end{enumerate}
+
+This produces a \textbf{self-healing partition}: $A$ stops
+receiving updates despite full network connectivity. The partition resolves
+automatically once NTP corrects $A$'s clock past the acceptance threshold
+($\textit{now}_A > \textit{HLC}_\text{cluster} - T$), after which the next
+anti-entropy cycle delivers all missed entries and convergence resumes. However,
+NTP slews clocks gradually (does not step unless the offset exceeds $\approx
+128ms$ by default), so the partition may persist for minutes to hours. If both
+$A$ and the cluster are stuck with bad NTP indefinitely the partition does not
+heal at all.
+
+The CRDT merge function remains correct so safety is preserved, thus the failure point
+is at the delivery layer, violating the liveness precondition of Strong
+Eventual Consistency \cite{shapiro2011}.
+
+Note that the check could have been maintained if: (i) The check was performed on
+the sender physical clock, rather than the HLC wall, each node judges independently.
+(ii) The threshold had to be set to a greater value such as 30s, this enables preventing
+real skew problems and avoid taking NTP jitter into cause.
+In the current implementation, skew check is removed, protection is
+delegated entirely to NTP and operational monitoring.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Concurrency Model}
@@ -538,21 +559,22 @@ After a week of downtime a node supposively needs a re-initiation.
 \subsection{Safety Considerations}
 
 The TTL approach has one known failure point: if a node is offline for longer
-than the TTL and holds a non-deleted entry for a key tombstoned on all other nodes,
+than the TTL and holds a non-deleted entry for a key tombstoned and GC'd on all other nodes,
 the node will republish entry thus the deletion will appear to be reversed.
 This is solved by forcing the node to re-initialize with empty settings wether
-on startup the node follows \texttt{time.Now() - lastShutdownTime > TTL}
+on startup the node follows \texttt{time.Now() - lastShutdownTime > TTL}.
+Reinit through \texttt{fixNodeState} discards any unsynced local CRDT state but cluster state is fully restored via anti-entropy.
+The loss is bounded to changes made only on the offline node's disk, never propagated before it went offline.
+This is verified through \texttt{TestStaleTTLReinit} in \texttt{system\_test.go}.
 
-There are also 2 known limitations we call sputtering cycle, determined by
-clock skew on machines running a tombstone garbage collection, then
-performing a Sync request. This will, from the skewed node, propagate again the GC'd entry.
-Moreover if a Sync request is performed just before a GC message is processed
-in the CRDT actor, Sync cycle brings with it GC'd entries creating a the same sputtering problem.
-These are mitigated through wire-layer filtering in the \texttt{Sync} handler.
+There are also 2 known limitations we call sputtering cycle, these are determined by
+Sync requests making a CRDT state snapshot and afterwards a GC request is serviced in the CRDT actor.
+This makes the Sync cycle bring with it GC'd entries creating a the problem.
+This is mitigated through wire-layer filtering in the \texttt{Sync} handler.
 Before including a local entry in the response or applying an incoming remote entry,
 the handler skips any entry where \texttt{Deleted = true} and
 \texttt{now - wallTime > TTL}. Filtering is applied in both directions preventing resurrection
-of already-collected tombstones regardless of clock skew or snapshot-before-GC ordering
+of tombstones regardless of GC cycles timing skew or snapshot-before-GC ordering
 between nodes.
 
 % ─────────────────────────────────────────────────────────────────────────────
@@ -635,6 +657,91 @@ untestable without process-level mocking, \texttt{json.Marshal} on \texttt{map[s
 fires in the Go standard library), and the \texttt{fsnotify} closed-channel
 path (fires only after the watcher goroutine has already exited).
 
+\subsection{System Tests}
+
+System tests run against a live three-node cluster deployed with Docker Compose.
+
+\paragraph{Infrastructure.}
+Logic helpers are built such \texttt{writeToNode} injects entries via the \texttt{Sync} RPC.
+A \texttt{wallOffset} parameter shifts the
+injected HLC wall time, enabling conflict-resolution scenarios
+without touching the system clock.
+Convergence is verified by \texttt{waitKeyValue}, \texttt{waitKeyDeleted}, and
+\texttt{waitKeyPurged}, each polling all nodes until the expected condition holds
+or a deadline is reached. Docker helpers
+(\texttt{stopNode}, \texttt{startNode}, \texttt{waitForNodeUp}) drive
+container lifecycle for fault-tolerance tests.
+The compose environment overrides \texttt{tombstoneTTL} to $10s$ and
+\texttt{gcInterval} to $3s$ so that GC and TTL reinit tests complete in under a
+minute.
+
+\paragraph{Basic write propagation.}
+\texttt{TestInitialStateConverges} verifies that node1's seed entry
+(\texttt{da=ddd}) reaches all peers through the startup anti-entropy pass.
+\texttt{TestWritePropagatesFromNode\{1,2,3\}} each inject a key on a single
+node and assert that all three nodes converge within a deadline, covering every
+origination point in the cluster.
+\texttt{TestBidirectionalSync} writes distinct keys to node1 and node2,
+verifying that both entries reach all nodes.
+\texttt{TestMultipleKeysConverge} fans five writes across all three nodes and
+asserts cluster-wide convergence for every key.
+
+\paragraph{LWW conflict resolution.}
+\texttt{TestHLCConflictResolution} writes the same key to two nodes with
+intentionally different HLC wall times (loser at $-2s$, winner at
+$+500ms$) and asserts that cluster converge to the winner.
+\texttt{TestOverwriteConverges} confirms that a later write (higher HLC) on a
+key that has already converged cluster-wide displaces the earlier value.
+\texttt{TestOlderWriteDoesNotOverwrite} sends a stale write ($-5s$
+wall offset) to a node that already holds a newer value, waits for any
+incorrect propagation to surface then asserts the newer value over the cluster.
+
+\paragraph{Tombstone lifecycle.}
+\texttt{TestTombstonePropagates} writes a key and waits for convergence then deletes it via a tombstone on node1
+and verifies cluster convergence.
+\texttt{TestTombstoneGC} extends the previous by waiting for the tombstone's wall time
+to age past TTL and the GC loop to start, confirming the entry is absent from \texttt{Sync} responses on every node.
+
+\paragraph{Fault tolerance.}
+\texttt{TestNodeRestartConverges} stops node1, writes a key on node2 while
+it is offline, restarts node1 and asserts that anti-entropy delivers the
+missed entry to node1.
+\texttt{TestStaleTTLReinit} goes through the forced-reinit path: after stopping
+node1, overwrites \texttt{last\_shutdown} with a timestamp $11s$ in the
+past (exceeding the $10s$ TTL), injects a future-clock entry into node1
+on-disk CRDT state (a winning entry) and restarts. If \texttt{fixNodeState} correctly
+calls \texttt{InitNew}, the injected entry is wiped before any propagation and node2's value is spread
+cluster-wide, if reinit is skipped the injected entry's higher HLC beats node2
+and the test fails.
+
+Table~\ref{tab:systemtests} summarises all system tests.
+
+\begin{table}[htbp]
+  \caption{System test suite}
+  \label{tab:systemtests}
+  \resizebox{\columnwidth}{!}{%
+    \begin{tabular}{ll}
+      \toprule
+      \textbf{Test} & \textbf{Property verified} \\
+      \midrule
+      \texttt{TestInitialStateConverges}       & Startup anti-entropy delivers seed data \\
+      \texttt{TestWritePropagatesFromNode1}     & Write on node 1 reaches all peers \\
+      \texttt{TestWritePropagatesFromNode2}     & Write on node 2 reaches all peers \\
+      \texttt{TestWritePropagatesFromNode3}     & Write on node 3 reaches all peers \\
+      \texttt{TestBidirectionalSync}            & Writes on two nodes merge \\
+      \texttt{TestMultipleKeysConverge}         & Fan-out writes converge cluster-wide \\
+      \texttt{TestHLCConflictResolution}        & Higher HLC wins conflict \\
+      \texttt{TestOverwriteConverges}           & Later write displaces earlier value \\
+      \texttt{TestOlderWriteDoesNotOverwrite}   & Stale write does not overwrite newer \\
+      \texttt{TestTombstonePropagates}          & Delete tombstone reaches all nodes \\
+      \texttt{TestTombstoneGC}                  & Tombstone purged after TTL expiry \\
+      \texttt{TestNodeRestartConverges}         & Offline node catches missed updates \\
+      \texttt{TestStaleTTLReinit}               & Long-offline node forces clean reinit \\
+      \bottomrule
+    \end{tabular}%
+  }
+\end{table}
+
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Conclusion}
 \label{sec:conclusion}
@@ -675,6 +782,12 @@ deployments at larger scale.
   databases,''
   in \emph{Proc. 18th Int. Conf. Principles of Distributed Systems (OPODIS)},
   Cortina d'Ampezzo, Italy, Dec.\ 2014.
+
+  \bibitem{cockroachdb2023}
+  CockroachDB Engineering,
+  ``Living without atomic clocks,''
+  Cockroach Labs Blog, 2023.
+  [Online]. Available: \url{https://www.cockroachlabs.com/blog/living-without-atomic-clocks/}
 
   \bibitem{dynamo2007}
   G.~DeCandia, D.~Hastorun, M.~Jampani, G.~Kakulapati, A.~Lakshman,
