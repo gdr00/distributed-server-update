@@ -46,7 +46,7 @@ Settings Replication System}
   The system aims to replicate Key-Value (KV) entries across nodes through: Last-Writer-Wins (LWW),
   Conflict-free Replicated Data Type (CRDT), gRPC transport protocol and a Hybrid Logical Clock (HLC) for causal ordering.
   We explain the decisions made designing each module and the problems encountered/mitigated during development such as: Clock-skew,
-  crash persistance handling, tombstones management and the anti-entropy approach and lifecycle enforcement between initialisation
+  crash persistence handling, tombstones management and the anti-entropy approach and lifecycle enforcement between initialisation
   and runtime phases.
 \end{abstract}
 
@@ -61,7 +61,7 @@ Settings Replication System}
 
 Configuration management across a server cluster is a common operational
 challenge. Changes to settings such as feature flags, service endpoints,
-parameteers must propagate to every node without a coordinator becoming
+parameters must propagate to every node without a coordinator becoming
 the single failure point.
 
 Approaches like \href{https://etcd.io/}{etcd},
@@ -137,10 +137,10 @@ The data flows through the system following four paths, wired up in
     updates its clock, merges, persists, and calls \texttt{OnFileSync}
     that delegates the \texttt{logic} layer to write the change locally.
   \item \textbf{Anti-entropy}: a ticker in the controller calls \texttt{syncAllPeers},
-    which sends the local snapshot to each peer via a Sync RPC whose returns (if any)
+    which sends the local snapshot to each peer via a Sync RPC which returns (if any)
     any newer entries through \texttt{NotifyRemote}.
   \item \textbf{Tombstone GC}: another separate ticker calls
-    \texttt{crdt.PurgeTombstones}, whose adhibited at removing stale deleted entries
+    \texttt{crdt.PurgeTombstones}, which removes stale deleted entries
     from the in-memory state map via the CRDT actor model.
 \end{enumerate}
 
@@ -269,7 +269,7 @@ preserving the benefits of both.
 
 Each HLC is a triple $(wall, logical, nodeID)$. The wall field stores
 Unix nanoseconds, the logical field is a 32-bit logical counter, the NodeID is a UUID
-string adhibited for the tiebreak. \ref{merge-semantics}. This ensures \texttt{Before()}
+string used as tiebreaker. \ref{merge-semantics}. This ensures \texttt{Before()}
 commutativity since $\forall n_i, n_j\in Nodes,\; i\neq j: Id(n_i) \neq Id(n_j)$
 
 \subsection{Tick and Update Rules}
@@ -373,7 +373,7 @@ type CRDT struct {
 CRDT state ensuring operation atomicity. External callers (\texttt{NotifyLocal}, \texttt{NotifyRemote},
 \texttt{Snapshot}, \texttt{queryRequest}, \texttt{PurgeTombstones}) communicate exclusively through
 channels. Snapshot and query requests are buffered synchronous response channels thus blocking
-untill the request is serviced.
+until the request is serviced.
 
 Callbacks (\texttt{OnBroadcast}, \texttt{OnFileSync}) are invoked
 synchronously within the actor loop. The \texttt{OnFileSync} callback
@@ -412,7 +412,7 @@ confined in the \texttt{network} package. The \texttt{Client} methods accept
 and return domain types (\texttt{types.Snapshot}, \texttt{types.SettingEntry}).
 Conversion to and from wire format is performed internally.
 
-This was not in the original design: an earlier iteration of \texttt{Client.Sync} and \texttt(Client.Broadcast)
+This was not in the original design: an earlier iteration of \texttt{Client.Sync} and \texttt{Client.Broadcast}
 accepted \texttt{[]*userpb.SettingEntry} and \texttt{[]*userpb.ServerStateUpdate},
 thus requiring the controller to perform the conversion before each call.
 Refactor moved conversion dependency into network package, making the transport
@@ -448,7 +448,7 @@ state will converge within one anti-entropy interval.
 
 There is an unimplemented enhancment regarding exchanges of unupdated KV pairs: currently
 can happen that 2 nodes at the same instant send a Sync request, this will on each node take a snapshot
-of local state and send it, then upon reciving the snapshot both nodes update their local entries, both send the updates
+of local state and send it, then upon receiving the snapshot both nodes update their local entries, both send the updates
 that consider necessary to the other that already had applied them through the received snapshot.
 This is solvable but out of context for this project purpose. (eg. Jitter, follower/leader Sync, Merkle tree, Delta state ecc.)
 
@@ -554,14 +554,14 @@ func (c *CRDT) purgeTombstones(ttl int64) {
 The default TTL is 14 days, twice the intended maximum node downtime
 after which an operator would investigate. This ensures that tombstones had been
 observed and applied by all healthy nodes via anti-entropy before it is removed.
-After a week of downtime a node supposively needs a re-initiation.
+After a week of downtime a node supposedly needs a re-initiation.
 
 \subsection{Safety Considerations}
 
 The TTL approach has one known failure point: if a node is offline for longer
 than the TTL and holds a non-deleted entry for a key tombstoned and GC'd on all other nodes,
 the node will republish entry thus the deletion will appear to be reversed.
-This is solved by forcing the node to re-initialize with empty settings wether
+This is solved by forcing the node to re-initialize with empty settings whether
 on startup the node follows \texttt{time.Now() - lastShutdownTime > TTL}.
 Reinit through \texttt{fixNodeState} discards any unsynced local CRDT state but cluster state is fully restored via anti-entropy.
 The loss is bounded to changes made only on the offline node's disk, never propagated before it went offline.
@@ -779,16 +779,16 @@ synchronisation system. The core LWW CRDT provides convergence
 under concurrent writes and network partitions. The actor concurrency model
 eliminates lock contention. Anti-entropy reconciliation bounds
 divergence to Sync interval regardless of broadcast reliability.
-Atomic persistence through \texttt{os.Rename} prevents corruption on ungracefull shutdown.
+Atomic persistence through \texttt{os.Rename} prevents corruption on ungraceful shutdown.
 Tombstone GC fixes CRDT state growth for long-running deployments.
 
 Several design decisions evolved during implementation. The protobuf
 abstraction boundary was moved into the \texttt{network} package, removing
 transport-layer knowledge from the controller. Error propagation got modified
 to return \texttt{error} from library code and keep
-\texttt{log.Fatal} in the application entry-point. Forcefull init had ben added
+\texttt{log.Fatal} in the application entry-point. Forceful init had ben added
 for nodes rejoining the cluster after more than TTL elapsed since last shutdown. A full
-reconciliation cycle had ben added upon start to make sure ungracefull shutdowns did not
+reconciliation cycle had ben added upon start to make sure ungraceful shutdowns did not
 produce stale entries.
 
 The system does not address gossip-based broadcast efficiency, or metrics
