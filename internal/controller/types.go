@@ -14,6 +14,7 @@ type Config struct {
 	AntiEntropySeconds  int
 	TombstoneTTLSeconds int
 	GCIntervalSeconds   int
+	HeartbeatSeconds    int
 }
 
 func LoadConfig(configPath string) (Config, error) {

@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -230,9 +231,10 @@ func TestRun_LocalFileChangePropagatesToCRDT(t *testing.T) {
 	ctrl := newTestController(t, workDir, settingsPath, 0, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	done := make(chan struct{})
+	go func() { ctrl.Run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
 
-	go ctrl.Run(ctx)
 	time.Sleep(100 * time.Millisecond) // let watcher start
 
 	// simulate file edit
@@ -419,9 +421,10 @@ func TestRun_OnFileSyncWriteError(t *testing.T) {
 	ctrl := newTestController(t, workDir, settingsPath, 0, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	done := make(chan struct{})
+	go func() { ctrl.Run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
 
-	go ctrl.Run(ctx)
 	time.Sleep(100 * time.Millisecond)
 
 	// make settings file unwritable so OnFileSync's Write call fails
@@ -666,5 +669,119 @@ func TestFixNodeState_MissingFile_LoadsExistingState(t *testing.T) {
 
 	if got := ctrl.crdt.Get("k"); got.Value != "v" {
 		t.Fatalf("expected existing state loaded, got %q", got.Value)
+	}
+}
+
+// heartbeat tests
+
+func TestWriteAndCheckLastHeartbeat(t *testing.T) {
+	workDir, settingsPath := setupWorkDir(t, types.Settings{})
+	ctrl := newTestController(t, workDir, settingsPath, 0, nil)
+
+	before := time.Now().UnixNano()
+	ctrl.writeHeartbeat()
+	after := time.Now().UnixNano()
+
+	got := ctrl.checkLastHeartbeat()
+	if got < before || got > after {
+		t.Fatalf("heartbeat %d outside [%d, %d]", got, before, after)
+	}
+}
+
+func TestCheckLastHeartbeat_MissingFile(t *testing.T) {
+	workDir, settingsPath := setupWorkDir(t, types.Settings{})
+	ctrl := newTestController(t, workDir, settingsPath, 0, nil)
+	if got := ctrl.checkLastHeartbeat(); got != -1 {
+		t.Fatalf("expected -1 for missing heartbeat, got %d", got)
+	}
+}
+
+func TestLastAliveTime_BothMissingReturnsMinusOne(t *testing.T) {
+	workDir, settingsPath := setupWorkDir(t, types.Settings{})
+	ctrl := newTestController(t, workDir, settingsPath, 0, nil)
+	os.Remove(filepath.Join(workDir, "last_shutdown"))
+	os.Remove(filepath.Join(workDir, "last_heartbeat"))
+	if got := ctrl.lastAliveTime(); got != -1 {
+		t.Fatalf("expected -1 with both files missing, got %d", got)
+	}
+}
+
+func TestLastAliveTime_PicksLarger(t *testing.T) {
+	workDir, settingsPath := setupWorkDir(t, types.Settings{})
+	ctrl := newTestController(t, workDir, settingsPath, 0, nil)
+
+	older := int64(1_000_000_000)
+	newer := int64(2_000_000_000)
+
+	if err := os.WriteFile(filepath.Join(workDir, "last_shutdown"),
+		[]byte(strconv.FormatInt(older, 10)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "last_heartbeat"),
+		[]byte(strconv.FormatInt(newer, 10)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := ctrl.lastAliveTime(); got != newer {
+		t.Fatalf("expected %d (heartbeat newer), got %d", newer, got)
+	}
+
+	if err := os.WriteFile(filepath.Join(workDir, "last_shutdown"),
+		[]byte(strconv.FormatInt(newer+1, 10)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := ctrl.lastAliveTime(); got != newer+1 {
+		t.Fatalf("expected %d (shutdown newer), got %d", newer+1, got)
+	}
+}
+
+func TestLastAliveTime_HeartbeatOnly(t *testing.T) {
+	workDir, settingsPath := setupWorkDir(t, types.Settings{})
+	ctrl := newTestController(t, workDir, settingsPath, 0, nil)
+	os.Remove(filepath.Join(workDir, "last_shutdown"))
+
+	ts := int64(5_000_000_000)
+	if err := os.WriteFile(filepath.Join(workDir, "last_heartbeat"),
+		[]byte(strconv.FormatInt(ts, 10)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := ctrl.lastAliveTime(); got != ts {
+		t.Fatalf("expected %d, got %d", ts, got)
+	}
+}
+
+func TestRunHeartbeat_TickerWritesFile(t *testing.T) {
+	workDir, settingsPath := setupWorkDir(t, types.Settings{})
+	ctrl := newTestController(t, workDir, settingsPath, 0, nil)
+	ctrl.heartbeatInterval = 10 * time.Millisecond
+
+	os.Remove(filepath.Join(workDir, "last_heartbeat"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ctrl.runHeartbeat(ctx)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if ctrl.checkLastHeartbeat() != -1 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("expected heartbeat file written by ticker within 2s")
+}
+
+func TestResolveHeartbeat_DefaultIsQuarterTTL(t *testing.T) {
+	ttl := int64(40 * time.Second)
+	got := resolveHeartbeat(Config{}, ttl)
+	want := time.Duration(ttl / 4)
+	if got != want {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+}
+
+func TestResolveHeartbeat_OverrideFromConfig(t *testing.T) {
+	got := resolveHeartbeat(Config{HeartbeatSeconds: 7}, 0)
+	if got != 7*time.Second {
+		t.Fatalf("expected 7s, got %v", got)
 	}
 }

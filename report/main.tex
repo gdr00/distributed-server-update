@@ -601,23 +601,29 @@ The CRDT package exposes three functions:
 The controller decides which path to take via \texttt{fixNodeState}:
 
 \begin{lstlisting}
-func (ctrl *Controller) fixNodeState(lastShutdown int64) error {
-    if lastShutdown != -1 &&
-        time.Now().UnixNano()-lastShutdown > ctrl.tombstoneTTL {
+func (ctrl *Controller) fixNodeState(lastAlive int64) error {
+    if lastAlive != -1 &&
+        time.Now().UnixNano()-lastAlive > ctrl.tombstoneTTL {
         return ctrl.crdt.InitNew(types.Settings{})
     }
     return ctrl.crdt.Init()
 }
 \end{lstlisting}
 
-\texttt{checkLastShutdown()} returns \texttt{-1} when no shutdown file
-exists (first startup after \texttt{InitNew} or \texttt{InitEmptyNode}),
-causing \texttt{Init()} to load the freshly written state. If the node was
-offline longer than the tombstone TTL, \texttt{InitNew} reinitialises with
-an empty state making the node re-sync from peers rather than republishing
-entries already garbage collected cluster wide.
-\texttt{saveShutdownTime()} is deferred in \texttt{Run} and records the
-clean-shutdown timestamp used by the next invocation.
+The input is \texttt{lastAliveTime()}, defined as
+$\max(last\_shutdown, last\_heartbeat)$.
+\texttt{last\_shutdown} is written only by the deferred
+\texttt{saveShutdownTime()} on graceful exit. \texttt{last\_heartbeat} is
+(by default) written every \texttt{TombstoneTTL/4} whith a dedicated goroutine in
+\texttt{Run}, providing a proof-of-life signal even when the node
+never reaches a graceful shutdown. Without the heartbeat the reinit
+suffers two symmetric failures: a node that crashed before any
+graceful shutdown would always take the \texttt{Init()} branch on restart,
+even after weeks offline (cluster pollution). A node that ran for years past
+its last graceful shutdown would always take the \texttt{InitNew()} branch
+on a brief crash. Both files return \texttt{-1} on the first startup after
+\texttt{InitNew} or \texttt{InitEmptyNode}, going through \texttt{Init()}
+on the freshly-written state.
 
 \subsection{Error Propagation Principle}
 
@@ -682,13 +688,17 @@ minute.
 \paragraph{Basic write propagation.}
 \texttt{TestInitialStateConverges} verifies that node1's seed entry
 (\texttt{da=ddd}) reaches all peers through the startup anti-entropy pass.
-\texttt{TestWritePropagatesFromNode\{1,2,3\}} each inject a key on a single
-node and assert that all three nodes converge within a deadline, covering every
-origination point in the cluster.
-\texttt{TestBidirectionalSync} writes distinct keys to node1 and node2,
-verifying that both entries reach all nodes.
-\texttt{TestMultipleKeysConverge} fans five writes across all three nodes and
-asserts cluster-wide convergence for every key.
+\texttt{TestWritePropagatesAcrossNodes} it injects a distinct
+key on each of the three nodes and asserts cluster-wide convergence
+covering every origination point in a single test. Concurrent write tests are performed
+at unit level since the actor model serializes the writes anyway at system's.
+
+\paragraph{Local file-watcher path.}
+\texttt{TestFileWatcherPropagates} edits node1's \texttt{settings.json} from
+outside the controller (via \texttt{docker exec}), bypassing the gRPC
+\texttt{Sync} ingress that every other test uses. This closes the end-to-end loop on the production
+write path that the unit-level \texttt{TestRun\_LocalFileChangePropagatesToCRDT}
+only covers in-process.
 
 \paragraph{LWW conflict resolution.}
 \texttt{TestHLCConflictResolution} writes the same key to two nodes with
@@ -703,20 +713,34 @@ incorrect propagation to surface then asserts the newer value over the cluster.
 \paragraph{Tombstone lifecycle.}
 \texttt{TestTombstonePropagates} writes a key and waits for convergence then deletes it via a tombstone on node1
 and verifies cluster convergence.
-\texttt{TestTombstoneGC} extends the previous by waiting for the tombstone's wall time
-to age past TTL and the GC loop to start, confirming the entry is absent from \texttt{Sync} responses on every node.
+\texttt{TestTombstoneResurrection} writes a key, deletes it, then writes the
+same key again with a $+2s$ HLC offset. The cluster must accept the
+resurrection since the new HLC beats the tombstone's clock. This is a guard
+against tombstones permanently blocking the re-use of a key.
+\texttt{TestTombstoneGC} extends \texttt{TestTombstonePropagates} by waiting
+for the tombstone's wall time to age past TTL and the GC loop to fire,
+confirming the entry is absent from \texttt{Sync} responses on every node.
 
 \paragraph{Fault tolerance.}
 \texttt{TestNodeRestartConverges} stops node1, writes a key on node2 while
 it is offline, restarts node1 and asserts that anti-entropy delivers the
 missed entry to node1.
+\texttt{TestSIGKILLRecovery} proves an ungraceful crash leaves
+\texttt{crdt\_state.json} intact. After a write converges, two peers are
+stopped so node1 on restart cannot sync, then is killed by
+\texttt{SIGKILL}. The normal refresh of \texttt{last\_shutdown} is bypassed
+because of SIGKILL. The heartbeat ticker keeps \texttt{last\_heartbeat} fresh
+so \texttt{lastAliveTime} on restart resolves on a recent timestamp and
+\texttt{fixNodeState} takes the \texttt{Init()} branch. Node1 must still hold
+the pre-crash key, proving that persistence held under a crash.
 \texttt{TestStaleTTLReinit} goes through the forced-reinit path: after stopping
-node1, overwrites \texttt{last\_shutdown} with a timestamp $11s$ in the
-past (exceeding the $10s$ TTL), injects a future-clock entry into node1
-on-disk CRDT state (a winning entry) and restarts. If \texttt{fixNodeState} correctly
-calls \texttt{InitNew}, the injected entry is wiped before any propagation and node2's value is spread
-cluster-wide, if reinit is skipped the injected entry's higher HLC beats node2
-and the test fails.
+node1, overwrites both \texttt{last\_shutdown} and \texttt{last\_heartbeat}
+with a timestamp $11s$ in the past (exceeding the $10s$ TTL), injects
+a future-clock entry into node1 on-disk CRDT state (a winning entry) and
+restarts. If \texttt{fixNodeState} correctly calls \texttt{InitNew}, the
+injected entry is wiped before any propagation and node2's value is spread
+cluster-wide, if reinit is skipped the injected entry's higher HLC beats
+node2 and the test fails.
 
 Table~\ref{tab:systemtests} summarises all system tests.
 
@@ -728,18 +752,17 @@ Table~\ref{tab:systemtests} summarises all system tests.
       \toprule
       \textbf{Test} & \textbf{Property verified} \\
       \midrule
-      \texttt{TestInitialStateConverges}       & Startup anti-entropy delivers seed data \\
-      \texttt{TestWritePropagatesFromNode1}     & Write on node 1 reaches all peers \\
-      \texttt{TestWritePropagatesFromNode2}     & Write on node 2 reaches all peers \\
-      \texttt{TestWritePropagatesFromNode3}     & Write on node 3 reaches all peers \\
-      \texttt{TestBidirectionalSync}            & Writes on two nodes merge \\
-      \texttt{TestMultipleKeysConverge}         & Fan-out writes converge cluster-wide \\
+      \texttt{TestInitialStateConverges}        & Startup anti-entropy delivers seed data \\
+      \texttt{TestWritePropagatesAcrossNodes}   & Write from any node reaches all peers \\
+      \texttt{TestFileWatcherPropagates}        & External \texttt{settings.json} edit propagates via fsnotify \\
       \texttt{TestHLCConflictResolution}        & Higher HLC wins conflict \\
       \texttt{TestOverwriteConverges}           & Later write displaces earlier value \\
       \texttt{TestOlderWriteDoesNotOverwrite}   & Stale write does not overwrite newer \\
       \texttt{TestTombstonePropagates}          & Delete tombstone reaches all nodes \\
+      \texttt{TestTombstoneResurrection}        & Newer write defeats existing tombstone \\
       \texttt{TestTombstoneGC}                  & Tombstone purged after TTL expiry \\
       \texttt{TestNodeRestartConverges}         & Offline node catches missed updates \\
+      \texttt{TestSIGKILLRecovery}              & State survives ungraceful crash \\
       \texttt{TestStaleTTLReinit}               & Long-offline node forces clean reinit \\
       \bottomrule
     \end{tabular}%

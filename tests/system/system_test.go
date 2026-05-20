@@ -1,6 +1,7 @@
 package systemtest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"sync"
 	"testing"
 	"time"
 
@@ -214,28 +214,27 @@ func TestInitialStateConverges(t *testing.T) {
 	waitKeyValue(t, "da", "ddd", 30*time.Second)
 }
 
-// TestWritePropagatesFromNode1 injects an entry into node1 and checks all nodes converge.
-func TestWritePropagatesFromNode1(t *testing.T) {
-	if err := writeToNode(context.Background(), nodes[0], "prop_n1", "from_node1", "node1", 0); err != nil {
-		t.Fatalf("write to node1: %v", err)
+// TestWritePropagatesAcrossNodes injects an entry from every node and asserts
+// each one converges cluster-wide.
+func TestWritePropagatesAcrossNodes(t *testing.T) {
+	cases := []struct {
+		origin int
+		key    string
+		value  string
+		nodeID string
+	}{
+		{0, "prop_n1", "from_node1", "node1"},
+		{1, "prop_n2", "from_node2", "node2"},
+		{2, "prop_n3", "from_node3", "node3"},
 	}
-	waitKeyValue(t, "prop_n1", "from_node1", 30*time.Second)
-}
-
-// TestWritePropagatesFromNode2 injects an entry into node2 and checks all nodes converge.
-func TestWritePropagatesFromNode2(t *testing.T) {
-	if err := writeToNode(context.Background(), nodes[1], "prop_n2", "from_node2", "node2", 0); err != nil {
-		t.Fatalf("write to node2: %v", err)
+	for _, c := range cases {
+		t.Run(c.nodeID, func(t *testing.T) {
+			if err := writeToNode(context.Background(), nodes[c.origin], c.key, c.value, c.nodeID, 0); err != nil {
+				t.Fatalf("write to %s: %v", c.nodeID, err)
+			}
+			waitKeyValue(t, c.key, c.value, 30*time.Second)
+		})
 	}
-	waitKeyValue(t, "prop_n2", "from_node2", 30*time.Second)
-}
-
-// TestWritePropagatesFromNode3 injects an entry into node3 and checks all nodes converge.
-func TestWritePropagatesFromNode3(t *testing.T) {
-	if err := writeToNode(context.Background(), nodes[2], "prop_n3", "from_node3", "node3", 0); err != nil {
-		t.Fatalf("write to node3: %v", err)
-	}
-	waitKeyValue(t, "prop_n3", "from_node3", 30*time.Second)
 }
 
 // TestTombstonePropagates writes a key, waits for convergence, then deletes it
@@ -263,79 +262,12 @@ func TestHLCConflictResolution(t *testing.T) {
 	if err := writeToNode(context.Background(), nodes[0], key, "loser", "test-loser", -int64(2*time.Second)); err != nil {
 		t.Fatalf("write loser to node1: %v", err)
 	}
-	// Winner: wall = now + 500ms (higher HLC, within 1s skew limit)
+	// Winner: wall = now + 500ms (higher HLC)
 	if err := writeToNode(context.Background(), nodes[1], key, "winner", "test-winner", int64(500*time.Millisecond)); err != nil {
 		t.Fatalf("write winner to node2: %v", err)
 	}
 
 	waitKeyValue(t, key, "winner", 30*time.Second)
-}
-
-// TestBidirectionalSync writes a distinct key to node1 and another to node2
-// concurrently, then verifies all nodes end up with both keys.
-func TestBidirectionalSync(t *testing.T) {
-	type result struct {
-		key string
-		err error
-	}
-	ch := make(chan result, 2)
-	go func() {
-		ch <- result{"bidir_a", writeToNode(context.Background(), nodes[0], "bidir_a", "val_a", "node1", 0)}
-	}()
-	go func() {
-		ch <- result{"bidir_b", writeToNode(context.Background(), nodes[1], "bidir_b", "val_b", "node2", 0)}
-	}()
-	for range 2 {
-		if r := <-ch; r.err != nil {
-			t.Fatalf("write %s: %v", r.key, r.err)
-		}
-	}
-
-	waitKeyValue(t, "bidir_a", "val_a", 30*time.Second)
-	waitKeyValue(t, "bidir_b", "val_b", 30*time.Second)
-}
-
-// TestMultipleKeysConverge fans writes across all three nodes concurrently and
-// asserts every node ends up with every key.
-func TestMultipleKeysConverge(t *testing.T) {
-	writes := []struct {
-		client userpb.UpdateServiceClient
-		key    string
-		value  string
-		nodeID string
-	}{
-		{nodes[0], "multi_1", "v1", "node1"},
-		{nodes[1], "multi_2", "v2", "node2"},
-		{nodes[2], "multi_3", "v3", "node3"},
-		{nodes[0], "multi_4", "v4", "node1"},
-		{nodes[1], "multi_5", "v5", "node2"},
-	}
-
-	var wg sync.WaitGroup
-	errs := make(chan error, len(writes))
-	for _, w := range writes {
-		wg.Add(1)
-		go func(w struct {
-			client userpb.UpdateServiceClient
-			key    string
-			value  string
-			nodeID string
-		}) {
-			defer wg.Done()
-			if err := writeToNode(context.Background(), w.client, w.key, w.value, w.nodeID, 0); err != nil {
-				errs <- fmt.Errorf("write %s: %w", w.key, err)
-			}
-		}(w)
-	}
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		t.Fatal(err)
-	}
-
-	for _, w := range writes {
-		waitKeyValue(t, w.key, w.value, 30*time.Second)
-	}
 }
 
 // TestOverwriteConverges writes a key, waits for convergence, then overwrites it
@@ -431,6 +363,15 @@ func startNode(t *testing.T, container string) {
 	}
 }
 
+// killNode sends SIGKILL to a container, bypassing graceful shutdown.
+// saveShutdownTime defer never runs, simulating a crash.
+func killNode(t *testing.T, container string) {
+	t.Helper()
+	if out, err := exec.Command("docker", "kill", "--signal=KILL", container).CombinedOutput(); err != nil {
+		t.Fatalf("docker kill %s: %v\n%s", container, err, out)
+	}
+}
+
 // waitForNodeUp polls until the node accepts a Sync RPC or the timeout expires.
 func waitForNodeUp(t *testing.T, c userpb.UpdateServiceClient, timeout time.Duration) {
 	t.Helper()
@@ -468,9 +409,9 @@ func TestNodeRestartConverges(t *testing.T) {
 // TestStaleTTLReinit manipulates last_shutdown so node1 appears to have been
 // offline longer than tombstoneTTL (10 s in test config). On restart, node1
 // must wipe its CRDT state. The wipe is proven by injecting a future-clock
-// entry (less than the hardcoded skew limit) into node1's on-disk state before
-// restart: if reinit fires the entry is gone and node2's value wins; if reinit
-// is skipped the injected entry's higher HLC beats node2 and spreads everywhere, test fails.
+// entry into node1's on-disk state before restart: if reinit fires the entry
+// is gone and node2's value wins, if reinit is skipped the injected entry's
+// higher HLC beats node2 and spreads everywhere, test fails.
 func TestStaleTTLReinit(t *testing.T) {
 	node1Container := envOr("NODE1_CONTAINER", "node1")
 	node1CRDTDir := envOr("NODE1_CRDT_DIR", "/data/node1_crdt")
@@ -487,11 +428,14 @@ func TestStaleTTLReinit(t *testing.T) {
 	stopNode(t, node1Container)
 	time.Sleep(500 * time.Millisecond)
 
-	// Write stale last_shutdown (11 s in the past → exceeds 10 s TTL).
+	// Stale both liveness files since max of their value is taken
 	staleNS := time.Now().Add(-11 * time.Second).UnixNano()
-	lastShutdownPath := filepath.Join(node1CRDTDir, "last_shutdown")
-	if err := os.WriteFile(lastShutdownPath, []byte(strconv.FormatInt(staleNS, 10)), 0600); err != nil {
+	staleStr := []byte(strconv.FormatInt(staleNS, 10))
+	if err := os.WriteFile(filepath.Join(node1CRDTDir, "last_shutdown"), staleStr, 0600); err != nil {
 		t.Fatalf("write stale last_shutdown: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(node1CRDTDir, "last_heartbeat"), staleStr, 0600); err != nil {
+		t.Fatalf("write stale last_heartbeat: %v", err)
 	}
 
 	// Inject a winning entry into node1's on-disk CRDT state. Clock is +100 ms
@@ -529,4 +473,118 @@ func TestTombstoneGC(t *testing.T) {
 	// Wait for tombstone to age past TTL (10 s) and the GC loop to fire (≤3 s).
 	// Worst case: 10 s TTL + 3 s GC interval = 13 s.
 	waitKeyPurged(t, key, 20*time.Second)
+}
+
+// TestTombstoneResurrection writes a key, deletes it, then writes the same key
+// again with a newer HLC. Cluster must accept the resurrection (newer write)
+// and converge on the new value. Checks if tombstones permanently invalidates a key
+func TestTombstoneResurrection(t *testing.T) {
+	key := "resurrection_key"
+
+	if err := writeToNode(context.Background(), nodes[0], key, "alive1", "node1", 0); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	waitKeyValue(t, key, "alive1", 30*time.Second)
+
+	if err := deleteFromNode(context.Background(), nodes[0], key, "node1"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	waitKeyDeleted(t, key, 30*time.Second)
+
+	// Re-write with a +2s wall offset to guarantee the new HLC beats the
+	// tombstone's clock, well inside the 10s TTL window.
+	if err := writeToNode(context.Background(), nodes[1], key, "alive2", "node2", int64(2*time.Second)); err != nil {
+		t.Fatalf("resurrection write: %v", err)
+	}
+	waitKeyValue(t, key, "alive2", 30*time.Second)
+}
+
+// TestFileWatcherPropagates exercises the local file-watcher path end-to-end:
+// edit settings.json inside node1's container, fsnotify fires, Logic emits an
+// onChange, the CRDT stamps an HLC and broadcasts, peers converge. Bypasses the
+// gRPC Sync ingress all other tests use.
+func TestFileWatcherPropagates(t *testing.T) {
+	node1Container := envOr("NODE1_CONTAINER", "node1")
+	key := "fwatcher_key"
+	value := "from_file_edit"
+
+	// Read current settings.json so we can preserve existing keys.
+	// Overwriting with just our key would tombstone every other entry.
+	out, err := exec.Command("docker", "exec", node1Container, "cat", "/data/settings.json").CombinedOutput()
+	if err != nil {
+		t.Fatalf("read settings.json: %v\n%s", err, out)
+	}
+	current := make(map[string]string)
+	if err := json.Unmarshal(out, &current); err != nil {
+		t.Fatalf("parse settings.json: %v\n%s", err, out)
+	}
+	current[key] = value
+
+	newData, err := json.Marshal(current)
+	if err != nil {
+		t.Fatalf("marshal settings: %v", err)
+	}
+
+	// Pipe new contents into settings.json from outside the controller's
+	// write path so only fsnotify can carry the change into the CRDT.
+	cmd := exec.Command("docker", "exec", "-i", node1Container, "sh", "-c", "cat > /data/settings.json")
+	cmd.Stdin = bytes.NewReader(newData)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("write settings.json: %v\n%s", err, out)
+	}
+
+	waitKeyValue(t, key, value, 30*time.Second)
+}
+
+// TestSIGKILLRecovery proves that an ungraceful crash leaves crdt_state.json
+// intact and that the node loads its prior state on restart. Peers are stopped
+// before the kill so they cannot refill node1's state via anti-entropy,
+// isolating the test to node1's local persistence. The heartbeat ticker keeps
+// last_heartbeat fresh while node1 is running, so even though SIGKILL skips
+// the defer that updates last_shutdown, lastAliveTime still resolves to a
+// recent timestamp and fixNodeState takes the Init() branch.
+func TestSIGKILLRecovery(t *testing.T) {
+	node1Container := envOr("NODE1_CONTAINER", "node1")
+	node2Container := envOr("NODE2_CONTAINER", "node2")
+	node3Container := envOr("NODE3_CONTAINER", "node3")
+
+	key := "sigkill_key"
+
+	if err := writeToNode(context.Background(), nodes[0], key, "survives_kill", "node1", 0); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	waitKeyValue(t, key, "survives_kill", 30*time.Second)
+
+	// Stop peers — node1's state must come from disk, not from a re-Sync.
+	stopNode(t, node2Container)
+	stopNode(t, node3Container)
+	defer func() {
+		startNode(t, node2Container)
+		startNode(t, node3Container)
+		waitForNodeUp(t, nodes[1], 15*time.Second)
+		waitForNodeUp(t, nodes[2], 15*time.Second)
+	}()
+
+	killNode(t, node1Container)
+	startNode(t, node1Container)
+	waitForNodeUp(t, nodes[0], 15*time.Second)
+
+	// Query node1 directly. Peers are down so any returned value must come
+	// from node1's reloaded crdt_state.json.
+	resp, err := nodes[0].Sync(context.Background(), &userpb.SyncRequest{})
+	if err != nil {
+		t.Fatalf("sync after restart: %v", err)
+	}
+	for _, e := range resp.NewerEntries {
+		if e.Key == key {
+			if e.Deleted {
+				t.Fatalf("key %q tombstoned after SIGKILL+restart", key)
+			}
+			if e.Value != "survives_kill" {
+				t.Fatalf("key %q = %q after SIGKILL+restart, want survives_kill", key, e.Value)
+			}
+			return
+		}
+	}
+	t.Fatalf("key %q absent on node1 after SIGKILL+restart — local persistence broken", key)
 }

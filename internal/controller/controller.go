@@ -25,6 +25,7 @@ type Controller struct {
 	tombstoneTTL        int64
 	antiEntropyInterval time.Duration
 	gcInterval          time.Duration
+	heartbeatInterval   time.Duration
 }
 
 func New(cfg Config) (*Controller, error) {
@@ -42,8 +43,9 @@ func New(cfg Config) (*Controller, error) {
 		antiEntropyInterval: resolveAntiEntropy(cfg),
 		gcInterval:          resolveGCInterval(cfg),
 	}
+	ctrl.heartbeatInterval = resolveHeartbeat(cfg, ctrl.tombstoneTTL)
 
-	if err := ctrl.fixNodeState(ctrl.checkLastShutdown()); err != nil {
+	if err := ctrl.fixNodeState(ctrl.lastAliveTime()); err != nil {
 		return nil, fmt.Errorf("failed to initialize crdt: %w", err)
 	}
 
@@ -138,8 +140,63 @@ func (ctrl *Controller) Run(ctx context.Context) error {
 
 	go ctrl.runTombstoneGC(ctx)
 
+	go ctrl.runHeartbeat(ctx)
+
 	<-ctx.Done()
 	return nil
+}
+
+func (ctrl *Controller) runHeartbeat(ctx context.Context) {
+	ctrl.writeHeartbeat()
+	ticker := time.NewTicker(ctrl.heartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			ctrl.writeHeartbeat()
+		}
+	}
+}
+
+func (ctrl *Controller) writeHeartbeat() {
+	path := filepath.Join(ctrl.cfg.CRDTWorkdir, "last_heartbeat")
+	data := strconv.FormatInt(time.Now().UnixNano(), 10)
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		log.Printf("failed to write heartbeat: %v", err)
+	}
+}
+
+// checkLastHeartbeat returns the last heartbeat timestamp in nanoseconds,
+// or -1 if absent or unreadable.
+func (ctrl *Controller) checkLastHeartbeat() int64 {
+	path := filepath.Join(ctrl.cfg.CRDTWorkdir, "last_heartbeat")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return -1
+	}
+	t, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil {
+		return -1
+	}
+	return t
+}
+
+// lastAliveTime returns the most recent proof-of-life timestamp: the larger of
+// last_shutdown (graceful exit) and last_heartbeat (periodic liveness write).
+// Returns -1 only when neither file exists, indicating first startup after
+// InitNew.
+func (ctrl *Controller) lastAliveTime() int64 {
+	shutdown := ctrl.checkLastShutdown()
+	heartbeat := ctrl.checkLastHeartbeat()
+	if shutdown == -1 && heartbeat == -1 {
+		return -1
+	}
+	if shutdown > heartbeat {
+		return shutdown
+	}
+	return heartbeat
 }
 
 func (ctrl *Controller) runAntiEntropy(ctx context.Context) {
@@ -235,4 +292,14 @@ func resolveTombstoneTTL(cfg Config) int64 {
 		return int64(cfg.TombstoneTTLSeconds) * int64(time.Second)
 	}
 	return int64(2 * 7 * 24 * time.Hour)
+}
+
+// resolveHeartbeat picks the heartbeat interval. Defaults to one quarter of
+// the tombstone TTL so that lastAliveTime can never lag liveness by more than
+// 1.25 × TTL even if the node is killed seconds before the next tick.
+func resolveHeartbeat(cfg Config, tombstoneTTL int64) time.Duration {
+	if cfg.HeartbeatSeconds > 0 {
+		return time.Duration(cfg.HeartbeatSeconds) * time.Second
+	}
+	return time.Duration(tombstoneTTL / 4)
 }
