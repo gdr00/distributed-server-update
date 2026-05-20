@@ -79,7 +79,7 @@ converge to the same state, without coordination. This paper describes a
 practical implementation of a CRDT based configuration store targeting small,
 fixed-membership clusters where $O(100)$ configuration keys are replicated
 across $O(10)$ nodes. This limit can be pushed up to $O(1000)$ keys and $O(50)$ nodes
-if necessary, based upon limits imposed from the full snapshot, sync implementation \ref{sec:antientropy}.
+if necessary, based upon limits imposed by the full snapshot sync implementation (Section~\ref{sec:antientropy}).
 
 The implementation is written in Go and uses gRPC for inter-node
 communication. The remainder of this paper is structured as follows.
@@ -269,7 +269,7 @@ preserving the benefits of both.
 
 Each HLC is a triple $(wall, logical, nodeID)$. The wall field stores
 Unix nanoseconds, the logical field is a 32-bit logical counter, the NodeID is a UUID
-string used as tiebreaker. \ref{merge-semantics}. This ensures \texttt{Before()}
+string used as tiebreaker (Section~\ref{merge-semantics}). This ensures \texttt{Before()}
 commutativity since $\forall n_i, n_j\in Nodes,\; i\neq j: Id(n_i) \neq Id(n_j)$
 
 \subsection{Tick and Update Rules}
@@ -290,8 +290,7 @@ Kulkarni--Demirbas rule \cite{kulkarni2014} is applied:
 \begin{equation}
   wall' = \max(w_l,\; w_r,\; now)
 \end{equation}
-The logical counter then captures concurrency at the chosen wall time
-:
+The logical counter then captures concurrency at the chosen wall time:
 \begin{equation}
   logical' =
   \begin{cases}
@@ -339,14 +338,14 @@ NTP slews clocks gradually (does not step unless the offset exceeds $\approx
 $A$ and the cluster are stuck with bad NTP indefinitely the partition does not
 heal at all.
 
-The CRDT merge function remains correct so safety is preserved, thus the failure point
+The CRDT merge function remains correct so safety is preserved; the failure point
 is at the delivery layer, violating the liveness precondition of Strong
 Eventual Consistency \cite{shapiro2011}.
 
-Note that the check could have been maintained if: (i) The check was performed on
-the sender physical clock, rather than the HLC wall, each node judges independently.
-(ii) The threshold had to be set to a greater value such as 30s, this enables preventing
-real skew problems and avoid taking NTP jitter into cause.
+Note that the check could have been maintained if: (i) the check was performed on
+the sender's physical clock rather than the HLC wall, so each node judges independently;
+(ii) the threshold was set to a greater value such as 30s, to detect
+real skew problems while avoiding triggers on NTP jitter.
 In the current implementation, skew check is removed, protection is
 delegated entirely to NTP and operational monitoring.
 
@@ -401,12 +400,12 @@ The inter-node protocol exposes two RPCs over gRPC:
 
 The server maintains a map of subscriber channels protected by a mutex.
 \texttt{Broadcast} under read-lock retrieves the subscribed peers channels, then
-sends the update to each channel in a non locking manner. Slow subscribers
+sends the update to each channel in a non-blocking manner. Slow subscribers
 drop updates relying on the next anti-entropy pass to recover.
 
 \subsection{Abstraction Boundary}
 
-A design decision was taken such all protobuf conversion
+A design decision was taken such that all protobuf conversion
 (\texttt{ToProto}, \texttt{FromProto}, \texttt{SnapshotToProto}) is
 confined in the \texttt{network} package. The \texttt{Client} methods accept
 and return domain types (\texttt{types.Snapshot}, \texttt{types.SettingEntry}).
@@ -422,8 +421,8 @@ layer a true black box.
 
 \texttt{Subscribe} method in \texttt{Client} wraps the streaming RPC in
 a retry loop: on any error, including server restart or network
-interruption, it waits three seconds and tries to re-establish the stream, first of all
-performing a Sync call to replay any entries missed during the outage. gRPC
+interruption, it waits three seconds and tries to re-establish the stream,
+performing a Sync call first to replay any entries missed during the outage. gRPC
 keepalive parameters are configured to detect dead connections.
 
 % ─────────────────────────────────────────────────────────────────────────────
@@ -441,16 +440,16 @@ with a background anti-entropy mechanism: periodic full-state comparison
 identifies and repairs divergence independently of the broadcast path (\href{https://docs.riak.com/riak/kv/latest/learn/concepts/active-anti-entropy/index.html}{Riak AAE}).
 
 This system implements a lightweight variant: \texttt{syncAllPeers}
-is called periodically by the controller, this sends a local snapshot to
+is called periodically by the controller; this sends a local snapshot to
 each peer via the Sync RPC, updating peer entries and also local entries on returned values.
 This is sufficient for eventual consistency: even if every broadcast is dropped, the
 state will converge within one anti-entropy interval.
 
-There is an unimplemented enhancment regarding exchanges of unupdated KV pairs: currently
-can happen that 2 nodes at the same instant send a Sync request, this will on each node take a snapshot
-of local state and send it, then upon receiving the snapshot both nodes update their local entries, both send the updates
-that consider necessary to the other that already had applied them through the received snapshot.
-This is solvable but out of context for this project purpose. (eg. Jitter, follower/leader Sync, Merkle tree, Delta state ecc.)
+There is an unimplemented enhancement regarding exchanges of redundant KV pairs: it
+can happen that 2 nodes send a Sync request at the same instant; each node takes a snapshot
+of local state and sends it, then upon receiving the snapshot both nodes update their local entries and send
+the updates they consider necessary to the other, which has already applied them through the received snapshot.
+This is solvable but out of scope for this project (e.g. Jitter, follower/leader Sync, Merkle tree, Delta state, etc.).
 
 \begin{lstlisting}
 func (ctrl *Controller) syncAllPeers(ctx context.Context) {
@@ -494,7 +493,7 @@ Three properties make this safe:
     thus the rename is within a single filesystem so, atomic
     at VFS layer on POSIX systems.
   \item \texttt{tmp.Sync()} flushes file data to storage before
-    the rename, preventing data to be in the page cache during power-loss.
+    the rename, preventing data from remaining only in the page cache during power-loss.
   \item \texttt{os.Rename} is atomic on POSIX: any reader will see either the
     old file or the new file, never a partially-written intermediate state.
 \end{enumerate}
@@ -503,10 +502,10 @@ If the process crashes before the rename, the temporary file is
 left in the directory and cleaned up during the next \texttt{crdt.Init()} call,
 the original file remains intact.
 
-If the crash happens after state is persisted, \texttt{crdt.Reconcile} function is called
-one time in \texttt{controller.Run()} thus fully restoring local file integrity on startup.
-This is a limiting factor since on an already initialized node, if edits are made on the
-setting file, while the node is offline, these will be discarded in favour of last known state.
+On any restart, \texttt{crdt.Reconcile} is called once from \texttt{controller.Run()},
+fully restoring local file integrity. This is a limiting factor since on an already initialized
+node, any edits made on the settings file while the node is offline will be discarded in favour
+of the last known state.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Garbage Collection}
@@ -515,16 +514,16 @@ setting file, while the node is offline, these will be discarded in favour of la
 
 \subsection{Problem}
 
-\textbf{Deleted entries} persist in CRDT state file indefinitely, this also
-happens for \textbf{temporary files} generated by \texttt{atomicRead} upon system
+\textbf{Deleted entries} persist in CRDT state file indefinitely; this also
+happens for \textbf{temporary files} generated by \texttt{atomicWriteFile} upon system
 crash. In systems with frequent delete-recreate cycles over large KV stores,
 tombstone accumulation brings two problems: memory leak over time,
 slower \texttt{Sync} and \texttt{crdt.Run} since larger snapshots are required.
 
 \subsection{Init cleanup}
 
-With regard to orphaned tmp files from \texttt{atomicRead}, the best solution in this case
-was also the easiest. Removal of all pattern matched tmp files on \texttt{crtd.Init} call.
+With regard to orphaned tmp files from \texttt{atomicWriteFile}, the best solution in this case
+was also the easiest: removal of all pattern-matched tmp files on the \texttt{crdt.Init} call.
 
 \subsection{TTL-Based Approach}
 
@@ -552,24 +551,24 @@ func (c *CRDT) purgeTombstones(ttl int64) {
 \end{lstlisting}
 
 The default TTL is 14 days, twice the intended maximum node downtime
-after which an operator would investigate. This ensures that tombstones had been
-observed and applied by all healthy nodes via anti-entropy before it is removed.
-After a week of downtime a node supposedly needs a re-initiation.
+after which an operator would investigate. This ensures that tombstones have been
+observed and applied by all healthy nodes via anti-entropy before they are removed.
+After a week of downtime a node typically requires re-initialization.
 
 \subsection{Safety Considerations}
 
 The TTL approach has one known failure point: if a node is offline for longer
 than the TTL and holds a non-deleted entry for a key tombstoned and GC'd on all other nodes,
-the node will republish entry thus the deletion will appear to be reversed.
-This is solved by forcing the node to re-initialize with empty settings whether
-on startup the node follows \texttt{time.Now() - lastShutdownTime > TTL}.
+the node will republish the entry, so the deletion will appear to be reversed.
+This is solved by forcing the node to re-initialize with empty settings if,
+on startup, \texttt{time.Now() - lastShutdownTime > TTL}.
 Reinit through \texttt{fixNodeState} discards any unsynced local CRDT state but cluster state is fully restored via anti-entropy.
 The loss is bounded to changes made only on the offline node's disk, never propagated before it went offline.
 This is verified through \texttt{TestStaleTTLReinit} in \texttt{system\_test.go}.
 
-There are also 2 known limitations we call sputtering cycle, these are determined by
-Sync requests making a CRDT state snapshot and afterwards a GC request is serviced in the CRDT actor.
-This makes the Sync cycle bring with it GC'd entries creating a the problem.
+There are also 2 known limitations called the sputtering cycle, determined by
+Sync requests taking a CRDT state snapshot before a GC request is serviced in the CRDT actor.
+This makes the Sync cycle bring along GC'd entries, creating the problem.
 This is mitigated through wire-layer filtering in the \texttt{Sync} handler.
 Before including a local entry in the response or applying an incoming remote entry,
 the handler skips any entry where \texttt{Deleted = true} and
@@ -614,7 +613,7 @@ The input is \texttt{lastAliveTime()}, defined as
 $\max(last\_shutdown, last\_heartbeat)$.
 \texttt{last\_shutdown} is written only by the deferred
 \texttt{saveShutdownTime()} on graceful exit. \texttt{last\_heartbeat} is
-(by default) written every \texttt{TombstoneTTL/4} whith a dedicated goroutine in
+(by default) written every \texttt{TombstoneTTL/4} with a dedicated goroutine in
 \texttt{Run}, providing a proof-of-life signal even when the node
 never reaches a graceful shutdown. Without the heartbeat the reinit
 suffers two symmetric failures: a node that crashed before any
@@ -622,7 +621,7 @@ graceful shutdown would always take the \texttt{Init()} branch on restart,
 even after weeks offline (cluster pollution). A node that ran for years past
 its last graceful shutdown would always take the \texttt{InitNew()} branch
 on a brief crash. Both files return \texttt{-1} on the first startup after
-\texttt{InitNew} or \texttt{InitEmptyNode}, going through \texttt{Init()}
+\texttt{InitNew}, going through \texttt{Init()}
 on the freshly-written state.
 
 \subsection{Error Propagation Principle}
@@ -688,10 +687,10 @@ minute.
 \paragraph{Basic write propagation.}
 \texttt{TestInitialStateConverges} verifies that node1's seed entry
 (\texttt{da=ddd}) reaches all peers through the startup anti-entropy pass.
-\texttt{TestWritePropagatesAcrossNodes} it injects a distinct
-key on each of the three nodes and asserts cluster-wide convergence
+\texttt{TestWritePropagatesAcrossNodes} injects a distinct
+key on each of the three nodes and asserts cluster-wide convergence,
 covering every origination point in a single test. Concurrent write tests are performed
-at unit level since the actor model serializes the writes anyway at system's.
+at unit level since the actor model serializes the writes at system level.
 
 \paragraph{Local file-watcher path.}
 \texttt{TestFileWatcherPropagates} edits node1's \texttt{settings.json} from
@@ -703,7 +702,7 @@ only covers in-process.
 \paragraph{LWW conflict resolution.}
 \texttt{TestHLCConflictResolution} writes the same key to two nodes with
 intentionally different HLC wall times (loser at $-2s$, winner at
-$+500ms$) and asserts that cluster converge to the winner.
+$+500ms$) and asserts that the cluster converges to the winner.
 \texttt{TestOverwriteConverges} confirms that a later write (higher HLC) on a
 key that has already converged cluster-wide displaces the earlier value.
 \texttt{TestOlderWriteDoesNotOverwrite} sends a stale write ($-5s$
@@ -786,9 +785,9 @@ Several design decisions evolved during implementation. The protobuf
 abstraction boundary was moved into the \texttt{network} package, removing
 transport-layer knowledge from the controller. Error propagation got modified
 to return \texttt{error} from library code and keep
-\texttt{log.Fatal} in the application entry-point. Forceful init had ben added
+\texttt{log.Fatal} in the application entry-point. Forceful init was added
 for nodes rejoining the cluster after more than TTL elapsed since last shutdown. A full
-reconciliation cycle had ben added upon start to make sure ungraceful shutdowns did not
+reconciliation cycle was added upon start to make sure ungraceful shutdowns did not
 produce stale entries.
 
 The system does not address gossip-based broadcast efficiency, or metrics
