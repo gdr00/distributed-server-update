@@ -42,10 +42,10 @@ Settings Replication System}
 
 \begin{abstract}
   This paper describes the architecture, implementation and decisions made during
-  the creation of a configuration synchronization system for small server clusters.
-  The system aims to replicate Key-Value (KV) entries across nodes through: Last-Writer-Wins (LWW),
+  the creation of a configuration synchronization system for server clusters.
+  The system synchronises Key-Value (KV) entries across nodes through: Last-Writer-Wins (LWW),
   Conflict-free Replicated Data Type (CRDT), gRPC transport protocol and a Hybrid Logical Clock (HLC) for causal ordering.
-  We explain the decisions made designing each module and the problems encountered/mitigated during development such as: Clock-skew,
+  We explain the {\color{violet}modules design decisions} and the problems encountered/mitigated during development such as: Clock-skew,
   crash persistence handling, tombstones management and the anti-entropy approach and lifecycle enforcement between initialisation
   and runtime phases.
 \end{abstract}
@@ -64,18 +64,19 @@ challenge. Changes to settings such as feature flags, service endpoints,
 parameters must propagate to every node without a coordinator becoming
 the single failure point.
 
-Approaches like \href{https://etcd.io/}{etcd},
+Approaches such as \href{https://etcd.io/}{etcd},
 \href{https://developer.hashicorp.com/consul}{Consul} rely on a leader node or a
 distributed database. These provide linearisability at the cost of availability
-(CP part of the CAP theorem and ACID principle): when the leader or a majority quorum is unreachable,
-there is no working system. For configuration data, human operators can intervene
-on conflicts and having stale data in some circumstances is relatively low risk,
-thus the trade-off favours Availability and Partition tolerance having \textbf{eventual} Consistency (AP).
+(Consistency and Partition tolerance part of the CAP theorem\cite{gilbert2002}; ACID principle): since RAFT\cite{raft}
+based, when the leader or the majority ($N/2+1$ nodes) is unreachable,
+there is no working system (not always Available; CAP\cite{gilbert2002}). For configuration data, human operators can intervene
+on conflicts. Moreover, having stale data in some circumstances is relatively low risk.
+{\color{violet}Therfore}, the trade-off favours Availability and Partition tolerance {\color{violet}
+(AP\cite{gilbert2002})} {\color{violet}at the cost of strong} Consistency.
 
 Conflict-free Replicated Data Types (CRDTs) \cite{shapiro2011} offer an
-alternative: every node can accept writes locally, the data
-structure guarantees that any two nodes with the same set of updates will
-converge to the same state, without coordination. This paper describes a
+alternative: every node can accept writes locally, the {\color{violet}CRDT, a join-semilattice under merge,} guarantees that any two nodes with the same set of updates will
+converge to the same state without inter-node coordination. This paper describes a
 practical implementation of a CRDT based configuration store targeting small,
 fixed-membership clusters where $O(100)$ configuration keys are replicated
 across $O(10)$ nodes. This limit can be pushed up to $O(1000)$ keys and $O(50)$ nodes
@@ -85,26 +86,26 @@ The implementation is written in Go and uses gRPC for inter-node
 communication. The remainder of this paper is structured as follows.
 Section~\ref{sec:arch} presents the overall system architecture.
 Section~\ref{sec:crdt} describes the CRDT data model.
-Section~\ref{sec:hlc} covers the Hybrid Logical Clock.
-Section~\ref{sec:concurrency} explains the concurrency model.
-Section~\ref{sec:network} details the network layer.
-Section~\ref{sec:antientropy} discusses anti-entropy reconciliation.
+Section~\ref{sec:hlc} covers the hybrid logical clock.
+Section~\ref{sec:actor} explains the actor-based concurrency model.
+Section~\ref{sec:network} details the networking module.
+Section~\ref{sec:antientropy} discusses the periodic state reconciliation.
 Section~\ref{sec:persistence} describes crash-safe persistence.
 Section~\ref{sec:gc} presents tombstone garbage collection.
 Section~\ref{sec:lifecycle} covers lifecycle and error handling.
 Section~\ref{sec:testing} outlines the testing strategy.
-Section~\ref{sec:conclusion} concludes.
+Section~\ref{sec:conclusion} presents the conclusions.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{System Architecture}
 \label{sec:arch}
 % ─────────────────────────────────────────────────────────────────────────────
 
-The system is structured as five Go packages with a strict dependency
+The code is structured as five Go packages with a strict dependency
 hierarchy, shown in Table~\ref{tab:packages}.
 
 \begin{table}[htbp]
-  \caption{Package responsibilities}
+  \caption{system module breakdown}
   \label{tab:packages}
   \begin{center}
     \begin{tabular}{ll}
@@ -153,11 +154,12 @@ The controller is the only package that depends on all the others, preventing im
 
 \subsection{Data Model}
 
-The data structure applies \textbf{LWW-Register} semantics \cite{shapiro2011}
-per key in a dictionary: each \texttt{SettingEntry} carries a payload,
-an HLC as timestamp and a tombstone flag. The tombstone turns each register into
-a two-state register (live/deleted), deletion itself is a timestamped
-write, subject to the same LWW rule.
+{\color{violet}The store is a compacted \textbf{LWW-element-set} \cite{shapiro2011} keyed by
+  setting name. Rather than maintaining separate add/remove sets, each element only stores
+  their merge result: the highest-timestamp operation plus a tombstone flag (\texttt{Deleted}).
+  A live element carries its value. Write and delete are timestamped operations,
+  on merge the higher timestamp wins and the flag selects whether the element is
+present (add) or removed (remove).}
 
 \begin{lstlisting}
 type SettingEntry struct {
@@ -350,8 +352,8 @@ In the current implementation, skew check is removed, protection is
 delegated entirely to NTP and operational monitoring.
 
 % ─────────────────────────────────────────────────────────────────────────────
-\section{Concurrency Model}
-\label{sec:concurrency}
+\section{Actor Model}
+\label{sec:actor}
 % ─────────────────────────────────────────────────────────────────────────────
 
 All mutations to the CRDT state map are serialised through a single actor
@@ -380,7 +382,7 @@ dispatches disk writes on a separate goroutine to prevent blocking the actor loo
 on I/O.
 
 % ─────────────────────────────────────────────────────────────────────────────
-\section{Network Layer}
+\section{Networking Module}
 \label{sec:network}
 % ─────────────────────────────────────────────────────────────────────────────
 
@@ -768,6 +770,8 @@ Table~\ref{tab:systemtests} summarises all system tests.
   }
 \end{table}
 
+\section{AI usage and application}
+
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Conclusion}
 \label{sec:conclusion}
@@ -796,6 +800,18 @@ deployments at larger scale.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \begin{thebibliography}{00}
+
+  \bibitem{raft}
+  D.~Ongaro and J.~Ousterhout,
+  ``In search of an understandable consensus algorithm,''
+  in \emph{Proc. USENIX Annual Technical Conf. (USENIX ATC)},
+  Philadelphia, PA, Jun.\ 2014, pp.\ 305--319.
+
+  \bibitem{gilbert2002}
+  S.~Gilbert and N.~Lynch,
+  ``Brewer's conjecture and the feasibility of consistent, available,
+  partition-tolerant web services,''
+  \emph{ACM SIGACT News}, vol.~33, no.~2, pp.~51--59, Jun.\ 2002.
 
   \bibitem{shapiro2011}
   M.~Shapiro, N.~Pregui\c{c}a, C.~Baquero, and M.~Zawirski,
