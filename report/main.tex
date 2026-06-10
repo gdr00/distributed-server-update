@@ -67,12 +67,12 @@ the single failure point.
 Approaches such as \href{https://etcd.io/}{etcd},
 \href{https://developer.hashicorp.com/consul}{Consul} rely on a leader node or a
 distributed database. These provide linearisability at the cost of availability
-(Consistency and Partition tolerance part of the CAP theorem\cite{gilbert2002}; ACID principle): since RAFT\cite{raft}
+({\color{violet}Consistency and Partition tolerance part of the CAP theorem\cite{gilbert2012}}; ACID principle): since RAFT\cite{raft}
 based, when the leader or the majority ($N/2+1$ nodes) is unreachable,
-there is no working system (not always Available; CAP\cite{gilbert2002}). For configuration data, human operators can intervene
+there is no working system (not always Available; CAP\cite{gilbert2012}). For configuration data, human operators can intervene
 on conflicts. Moreover, having stale data in some circumstances is relatively low risk.
 {\color{violet}Therfore}, the trade-off favours Availability and Partition tolerance {\color{violet}
-(AP\cite{gilbert2002})} {\color{violet}at the cost of strong} Consistency.
+(AP\cite{gilbert2012})} {\color{violet}at the cost of strong} Consistency.
 
 Conflict-free Replicated Data Types (CRDTs) \cite{shapiro2011} offer an
 alternative: every node can accept writes locally, the {\color{violet}CRDT, a join-semilattice under merge,} guarantees that any two nodes with the same set of updates will
@@ -154,12 +154,12 @@ The controller is the only package that depends on all the others, preventing im
 
 \subsection{Data Model}
 
-{\color{violet}The store is a compacted \textbf{LWW-element-set} \cite{shapiro2011} keyed by
-  setting name. Rather than maintaining separate add/remove sets, each element only stores
-  their merge result: the highest-timestamp operation plus a tombstone flag (\texttt{Deleted}).
-  A live element carries its value. Write and delete are timestamped operations,
-  on merge the higher timestamp wins and the flag selects whether the element is
-present (add) or removed (remove).}
+{\color{violet}The data structure is an \textbf{LWW-register}\cite{shapiro2011} map keyed by setting name.
+  Per Shapiro, each register is any local data type $X$ paired with its timestamp from the $assign$ function.
+  In our case $X$ is a $(key, value, Deleted)$ triplet, and the timestamp is managed through an HLC (\autoref{sec:hlc}).
+  The key is stored alongside its value so the map can be rebuilt on the destination node, whilst the \texttt{Deleted} flag deals with
+  deleted entries on the setting file, enabling the local module to drop locally persisted settings.
+}
 
 \begin{lstlisting}
 type SettingEntry struct {
@@ -173,10 +173,10 @@ type SettingEntry struct {
 \subsection{Merge Semantics}
 \label{merge-semantics}
 
-Two nodes merge by iterating one map against the other and checking
-for each key the entry with the higher clock thus the winning one. On equal clocks,
-the lexicographically larger NodeID is used as tiebreaker,
-ensuring deterministic total order.
+Two nodes merge by iterating {\color{violet}the local map against the remote one and checking each key:
+if the key exists locally with a higher clock is kept unaltered, else it is created or overwritten.}
+On equal clocks, the lexicographically larger NodeID is used as tiebreaker,
+ensuring a deterministic total order.
 
 \begin{lstlisting}
 func (c *CRDT) merge(incoming SettingEntry) bool {
@@ -191,21 +191,22 @@ func (c *CRDT) merge(incoming SettingEntry) bool {
 
 \subsection{Tombstone Semantics}
 
-Deletions are represented as tombstones: entry with \texttt{Deleted~=~true}
-and a fresh clock. Tombstones undergo the same LWW merge as the payload and
-can be displaced by a later write. This prevents the anomaly where a deletion
+Deletions are {\color{violet}managed by setting the \texttt{Deleted} flag to \texttt{true}
+and stamping a fresh clock on the associated triplet}. Tombstones undergo the same LWW merge as the payload and
+can be displaced by a later write. This avoids the anomaly where a deletion
 arrives after a concurrent write and erroneously removes the newer value.
 
 \subsection{CvRDT}
 
-The implementation is a hybrid CRDT\@: each local state change broadcasts a
-\texttt{SettingEntry} to peers (operation-based style), while a timed
-\texttt{Sync} provides anti-entropy reconciliation (state-based style).
-Because LWW merge is commutative and idempotent, each broadcast is algebraically
+The implementation is {\color{violet}fundamentally a state-based CRDT: a timed
+  \texttt{Sync} provides anti-entropy reconciliation and each local state change broadcasts a
+  \texttt{SettingEntry} to peers (operation-based style).
+  Because LWW merge is commutative and associative, a set of updates can be applied regardless of the order to obtain the same result,
+and idempotent, makes a merge of $B\subseteq A$ a no-op. Therfore,} each broadcast is algebraically
 equivalent to a partial state merge. Convergence is guaranteed
-entirely by the state-based anti-entropy, the broadcast is a best-effort optimisation.
+entirely by the state-based anti-entropy \texttt{sync} cycle, the broadcast is a best-effort optimisation.
 
-\subsection{Convergence Proof (CvRDT)}
+\subsection{CvRDT proof}
 \label{sec:cvrdtproof}
 
 \paragraph{State forms a join-semilattice.}
@@ -261,15 +262,15 @@ regardless of delivery order.
 
 \subsection{Motivation}
 
-A pure Lamport clock provides causal ordering but loses the physical-time
+A Lamport clock \cite{lamport1978} provides causal ordering but loses the physical-time
 locality property: events that happen close together in real time may receive
 widely separated clock values if logical increments accumulate. Hybrid Logical
-Clocks \cite{kulkarni2014} integrates the Lamport clock with a wallTime,
+Clocks \cite{kulkarni2014} integrate the Lamport clock with a wall time,
 preserving the benefits of both.
 
 \subsection{Clock Structure}
 
-Each HLC is a triple $(wall, logical, nodeID)$. The wall field stores
+{\color{violet}Each node maintains an HLC as a triple $(wall, logical, nodeID)$}. The wall field stores
 Unix nanoseconds, the logical field is a 32-bit logical counter, the NodeID is a UUID
 string used as tiebreaker (Section~\ref{merge-semantics}). This ensures \texttt{Before()}
 commutativity since $\forall n_i, n_j\in Nodes,\; i\neq j: Id(n_i) \neq Id(n_j)$
@@ -807,16 +808,20 @@ deployments at larger scale.
   in \emph{Proc. USENIX Annual Technical Conf. (USENIX ATC)},
   Philadelphia, PA, Jun.\ 2014, pp.\ 305--319.
 
-  \bibitem{gilbert2002}
-  S.~Gilbert and N.~Lynch,
-  ``Brewer's conjecture and the feasibility of consistent, available,
-  partition-tolerant web services,''
-  \emph{ACM SIGACT News}, vol.~33, no.~2, pp.~51--59, Jun.\ 2002.
+  \bibitem{gilbert2012}
+  S.~Gilbert and N.~A.~Lynch,
+  ``Perspectives on the CAP theorem,''
+  \emph{Computer}, vol.~45, no.~2, pp.~30--36, Feb.\ 2012.
 
   \bibitem{shapiro2011}
   M.~Shapiro, N.~Pregui\c{c}a, C.~Baquero, and M.~Zawirski,
   ``A comprehensive study of convergent and commutative replicated data types,''
   INRIA, Tech. Rep. RR-7506, 2011.
+
+  \bibitem{lamport1978}
+  L.~Lamport,
+  ``Time, clocks, and the ordering of events in a distributed system,''
+  \emph{Commun. ACM}, vol.~21, no.~7, pp.~558--565, Jul.\ 1978.
 
   \bibitem{kulkarni2014}
   S.~S.~Kulkarni and M.~Demirbas,
