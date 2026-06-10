@@ -377,10 +377,10 @@ CRDT state ensuring operation atomicity. External callers (\texttt{NotifyLocal},
 channels. Snapshot and query requests are buffered synchronous response channels thus blocking
 until the request is serviced.
 
-Callbacks (\texttt{OnBroadcast}, \texttt{OnFileSync}) are invoked
-synchronously within the actor loop. The \texttt{OnFileSync} callback
-dispatches disk writes on a separate goroutine to prevent blocking the actor loop
-on I/O.
+Callbacks \texttt{OnBroadcast}, \texttt{OnFileSync} are invoked
+synchronously in the actor loop {\color{violet}to preserve event order. \texttt{OnFileSync}
+  decouoples the actor loop from disk I/O, queuing each entry on a buffered channel drained by
+calling in order the \texttt{Write} function for each entry by a writer goroutine.}
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Networking Module}
@@ -408,13 +408,13 @@ drop updates relying on the next anti-entropy pass to recover.
 
 \subsection{Abstraction Boundary}
 
-A design decision was taken such that all protobuf conversion
-(\texttt{ToProto}, \texttt{FromProto}, \texttt{SnapshotToProto}) is
-confined in the \texttt{network} package. The \texttt{Client} methods accept
+A design decision was taken such that protobuf conversions
+(\texttt{ToProto}, \texttt{FromProto}, \texttt{SnapshotToProto}) are
+confined to the \texttt{network} package. The \texttt{Client} methods accept
 and return domain types (\texttt{types.Snapshot}, \texttt{types.SettingEntry}).
 Conversion to and from wire format is performed internally.
 
-This was not in the original design: an earlier iteration of \texttt{Client.Sync} and \texttt{Client.Broadcast}
+This was not planned in advance: an earlier iteration of \texttt{Client.Sync} and \texttt{Client.Broadcast}
 accepted \texttt{[]*userpb.SettingEntry} and \texttt{[]*userpb.ServerStateUpdate},
 thus requiring the controller to perform the conversion before each call.
 Refactor moved conversion dependency into network package, making the transport
@@ -422,11 +422,31 @@ layer a true black box.
 
 \subsection{Reconnection and Keepalives}
 
-\texttt{Subscribe} method in \texttt{Client} wraps the streaming RPC in
-a retry loop: on any error, including server restart or network
-interruption, it waits three seconds and tries to re-establish the stream,
-performing a Sync call first to replay any entries missed during the outage. gRPC
-keepalive parameters are configured to detect dead connections.
+{\color{violet}A \texttt{Subscribe} method defined in \texttt{Client} wraps the streaming RPC in
+  a retry loop as follows:
+
+\begin{lstlisting}
+  func (c *Client) Subscribe(
+    ctx context.Context,
+    getSnapshot func() types.Snapshot,
+    onUpdate func(types.SettingEntry)) {
+    for {
+      s := getSnapshot()
+      if err := c.runStream(ctx, s, onUpdate); err != nil {
+        if ctx.Err() != nil {
+          return
+        }
+        log.Printf("stream broken, reconnecting: %v", err)
+        time.Sleep(3 * time.Second)
+      }
+    }
+}
+\end{lstlisting}
+
+  On any error (unless cancelled context), including server restart or network
+  interruption, it waits three seconds and tries to re-establish the stream through \texttt{runStream}:
+  it first performs a Sync call to replay any entries missed during the outage, then opens the update stream.
+gRPC keepalive parameters are configured to detect dead connections.}
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Anti-Entropy Reconciliation}
@@ -438,21 +458,23 @@ may miss updates. A (state-based) CRDT that relies solely on broadcast for
 propagation is not eventually consistent in presence of message losses,
 nodes that miss a broadcast permanently diverge.
 
-Production CRDT deployments (Riak, Dynamo \cite{dynamo2007}) address this
+Production CRDT deployments (Riak, Dynamo \cite{dynamo2007}) address convergence
 with a background anti-entropy mechanism: periodic full-state comparison
 identifies and repairs divergence independently of the broadcast path (\href{https://docs.riak.com/riak/kv/latest/learn/concepts/active-anti-entropy/index.html}{Riak AAE}).
 
-This system implements a lightweight variant: \texttt{syncAllPeers}
+Our system implements a lightweight variant: \texttt{syncAllPeers}
 is called periodically by the controller; this sends a local snapshot to
-each peer via the Sync RPC, updating peer entries and also local entries on returned values.
-This is sufficient for eventual consistency: even if every broadcast is dropped, the
-state will converge within one anti-entropy interval.
+each peer via the Sync RPC. The peer merges any missing or newer entries and returns the entries where its copy is newer
+or not present on caller.
+This is sufficient for eventual consistency: even if every broadcast drops, {\color{violet}the
+state will eventually converge.}
 
 There is an unimplemented enhancement regarding exchanges of redundant KV pairs: it
-can happen that 2 nodes send a Sync request at the same instant; each node takes a snapshot
+can happen that two nodes send a Sync request {\color{violet}concurrently}; each node takes a snapshot
 of local state and sends it, then upon receiving the snapshot both nodes update their local entries and send
 the updates they consider necessary to the other, which has already applied them through the received snapshot.
-This is solvable but out of scope for this project (e.g. Jitter, follower/leader Sync, Merkle tree, Delta state, etc.).
+This is solvable but since it is a performance issue and not a correctness one, it is not covered in this
+project (e.g. Jitter, follower/leader Sync, Merkle tree, Delta state, etc.).
 
 \begin{lstlisting}
 func (ctrl *Controller) syncAllPeers(ctx context.Context) {
@@ -465,20 +487,17 @@ func (ctrl *Controller) syncAllPeers(ctx context.Context) {
 }
 \end{lstlisting}
 
-A 60-second interval was chosen as default: bounding divergence to one
-minute in worst-case broadcast loss and generating negligible network traffic
-for the cluster size targeted.
+A 60-second interval was chosen as default for the sync anti-entropy cycle.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Crash-Safe Persistence}
 \label{sec:persistence}
 % ─────────────────────────────────────────────────────────────────────────────
 
-After each merge, CRDT serialises its state to \texttt{crdt\_state.json} found in the CRDT working directory. The naive approach
-using \texttt{os.WriteFile} is not crash-safe:
+After each merge, CRDT serialises its state to \texttt{crdt\_state.json} found in the CRDT
+working directory. The naive approach using \texttt{os.WriteFile} is not crash-safe:
 if the process is killed after \texttt{WriteFile} had truncated the file and before
-the kernel had flushed all pages to disk, the node restarts with a
-corrupted state file.
+the kernel had flushed all pages to disk, the node will start with a corrupted state file.
 
 The correct pattern we used is the atomic rename:
 
@@ -490,11 +509,11 @@ func atomicWriteFile(path string, data []byte) error {
 }
 \end{lstlisting}
 
-Three properties make this safe:
+Three properties make \texttt{atomicWriteFile} safe:
 \begin{enumerate}
   \item The temporary file is in the same directory of the target,
     thus the rename is within a single filesystem so, atomic
-    at VFS layer on POSIX systems.
+    at the Virtual File System layer on POSIX systems.
   \item \texttt{tmp.Sync()} flushes file data to storage before
     the rename, preventing data from remaining only in the page cache during power-loss.
   \item \texttt{os.Rename} is atomic on POSIX: any reader will see either the
@@ -569,10 +588,10 @@ Reinit through \texttt{fixNodeState} discards any unsynced local CRDT state but 
 The loss is bounded to changes made only on the offline node's disk, never propagated before it went offline.
 This is verified through \texttt{TestStaleTTLReinit} in \texttt{system\_test.go}.
 
-There are also 2 known limitations called the sputtering cycle, determined by
+There are also two known limitations named sputtering cycle, determined by
 Sync requests taking a CRDT state snapshot before a GC request is serviced in the CRDT actor.
 This makes the Sync cycle bring along GC'd entries, creating the problem.
-This is mitigated through wire-layer filtering in the \texttt{Sync} handler.
+This is mitigated by wire-layer filtering in the \texttt{Sync} handler.
 Before including a local entry in the response or applying an incoming remote entry,
 the handler skips any entry where \texttt{Deleted = true} and
 \texttt{now - wallTime > TTL}. Filtering is applied in both directions preventing resurrection
@@ -658,9 +677,9 @@ allocation or network related problems.
 \subsection{Coverage}
 
 Line coverage targets were established and maintained:
-\texttt{types} at 100\%, \texttt{crdt} at approximately 90\%, \texttt{logic}
-at approximately 90\%, \texttt{network} at approximately 91\%, and
-\texttt{controller} at approximately 92\%. The remaining uncovered branches are structurally
+\texttt{types} at 100\%, \texttt{crdt} at 90\%, \texttt{logic}
+at 90\%, \texttt{network} at 91\%, and
+\texttt{controller} at 91\%. The remaining uncovered branches are structurally
 untestable without process-level mocking, \texttt{json.Marshal} on \texttt{map[string]string} (the error path never
 fires in the Go standard library), and the \texttt{fsnotify} closed-channel
 path (fires only after the watcher goroutine has already exited).
@@ -671,7 +690,9 @@ the concurrent-write scenario that system-level tests cannot exercise.
 
 \subsection{System Tests}
 
-System tests run against a live three-node cluster deployed with Docker Compose.
+System tests run against a live three-node cluster deployed with Docker Compose, each node in its own isolated container,
+communicating over gRPC on the docker network. Three nodes is the minimal topology to simulate multi-peer behaviour.
+A two-node setup is not enough for example to test the fan-out sync between peers.
 
 \paragraph{Infrastructure.}
 Logic helpers are built such \texttt{writeToNode} injects entries via the \texttt{Sync} RPC.
@@ -723,7 +744,7 @@ against tombstones permanently blocking the re-use of a key.
 for the tombstone's wall time to age past TTL and the GC loop to fire,
 confirming the entry is absent from \texttt{Sync} responses on every node.
 
-\paragraph{Fault tolerance.}
+\paragraph{Node failure recovery.}
 \texttt{TestNodeRestartConverges} stops node1, writes a key on node2 while
 it is offline, restarts node1 and asserts that anti-entropy delivers the
 missed entry to node1.
@@ -771,8 +792,6 @@ Table~\ref{tab:systemtests} summarises all system tests.
   }
 \end{table}
 
-\section{AI usage and application}
-
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Conclusion}
 \label{sec:conclusion}
@@ -796,8 +815,38 @@ reconciliation cycle was added upon start to make sure ungraceful shutdowns did 
 produce stale entries.
 
 The system does not address gossip-based broadcast efficiency, or metrics
-observability, all known gaps appropriate for future work in production
+observability, gaps appropriate for future work in production
 deployments at larger scale.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section*{Acknowledgments}
+% ─────────────────────────────────────────────────────────────────────────────
+
+This project used a coding assistant during development and its use is disclosed here.
+The final implementation, architectural choices and system design were all.
+The assistant role was to review, be a sounding board and a template creator for the code and report.
+All its output was verified and edited before being incorporated.
+
+Specifically it was used to:
+\begin{itemize}
+  \item \textbf{Clarify theory.} Discuss and pressure-test the author's understanding
+    of the CRDT formalism used in this report: join-semilattices, the LWW-register
+    model, least-upper-bound merge semantics and proof correctness so that the claims
+    made here are stated precisely.
+  \item \textbf{Review the manuscript.} Identify imprecise or overstated claims,
+    grammatical errors, and notation issues in the prose, suggest phrasing.
+    Additions were made by the assistant then edited and reviewed by the author.
+  \item \textbf{Review code and find defects.} Audit selected portions of the code.
+    This surfaced a write-ordering bug that could have caused out of order writes.
+  \item \textbf{Format references.} Produce and check bibliographic entries for
+    citations in the paper.
+  \item \textbf{Boilerplate function creation.} Many unit tests were coded by the assistant to save time.
+    All generated tests were reviewed in a later refactor. Redundant or incorrect tests were removed.
+    System tests and specific test scenarios were fully planned and made by hand.
+    Channel accessor boilerplates were templated by the assistant (Get, Snapshot, NotifyRemote, etc.).
+\end{itemize}
+
+Assistant's role was limited to review, suggestions, and the specific contributions listed above.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \begin{thebibliography}{00}
