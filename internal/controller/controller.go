@@ -106,13 +106,25 @@ func (ctrl *Controller) Run(ctx context.Context) error {
 	}
 
 	// crdt → logic (write file on remote change)
-	ctrl.crdt.OnFileSync = func(entry types.SettingEntry) {
-		// inside gorutine to avoid locking crdt Run loop on disk write
-		go func() {
-			if err := ctrl.logic.Write(entry); err != nil {
-				log.Printf("failed to write settings: %v", err)
+	writeCh := make(chan types.SettingEntry, 128)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case entry := <-writeCh:
+				if err := ctrl.logic.Write(entry); err != nil {
+					log.Printf("failed to write settings: %v", err)
+				}
 			}
-		}()
+		}
+	}()
+	ctrl.crdt.OnFileSync = func(entry types.SettingEntry) {
+		// detaches the actor-loop from the io whilst maintaining the write order
+		select {
+		case writeCh <- entry:
+		case <-ctx.Done():
+		}
 	}
 
 	// crdt → network (broadcast to peers)
